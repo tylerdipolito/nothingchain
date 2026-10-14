@@ -1,3 +1,16 @@
 /nothingchain
 /nothingchain.json
+/gochain
+/gochain.json
+/gochain.json.lock
+/.gochain-wallet.json
+*.wallet.json
 *.exe
+
+/gochain-v2.json
+/gochain-v2.json.lock
+/gochain-peer-v2.json
+/gochain-peer-v2.json.lock
+
+/gochain-amm-test.json
+/gochain-amm-test.json.lock

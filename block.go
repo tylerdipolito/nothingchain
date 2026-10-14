@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,49 +10,83 @@ import (
 	"time"
 )
 
-// Transaction moves nothing, from someone, to someone, beautifully.
+const Difficulty = 4
+const MaxMemoBytes = 512
+const MaxPendingTxs = 1000
+
+// Transaction transfers integer atomic GO units and is authorized by the sender's key.
 type Transaction struct {
-	From   string `json:"from"`
-	To     string `json:"to"`
-	Amount int64  `json:"amount"` // MUST be 0. Enforced by consensus.
-	Memo   string `json:"memo"`
+	From      string `json:"from"`
+	To        string `json:"to"`
+	Amount    int64  `json:"amount_atoms"`
+	Memo      string `json:"memo"`
+	Nonce     uint64 `json:"nonce"`
+	PublicKey string `json:"public_key"`
+	Signature string `json:"signature"`
+}
+
+func (tx Transaction) signingBytes() []byte {
+	data, _ := json.Marshal(struct {
+		Chain  string `json:"chain"`
+		From   string `json:"from"`
+		To     string `json:"to"`
+		Amount int64  `json:"amount_atoms"`
+		Memo   string `json:"memo"`
+		Nonce  uint64 `json:"nonce"`
+	}{ChainID, tx.From, tx.To, tx.Amount, tx.Memo, tx.Nonce})
+	return data
 }
 
 func (tx Transaction) Validate() error {
-	if tx.From == "" || tx.To == "" {
-		return fmt.Errorf("tx needs a from and a to, even if nothing moves")
+	if !validAddress(tx.From) || !validAddress(tx.To) {
+		return fmt.Errorf("sender and recipient must be GoChain wallet addresses")
 	}
-	if tx.Amount != 0 {
-		return fmt.Errorf("invalid amount %d: NothingChain only moves nothing (0 NADA)", tx.Amount)
+	if tx.Amount < 0 {
+		return fmt.Errorf("amount cannot be negative")
+	}
+	if len(tx.Memo) > MaxMemoBytes {
+		return fmt.Errorf("memo exceeds %d bytes", MaxMemoBytes)
+	}
+	if tx.Nonce == 0 {
+		return fmt.Errorf("transaction nonce must start at 1")
+	}
+	pub, err := hex.DecodeString(tx.PublicKey)
+	if err != nil || len(pub) != ed25519.PublicKeySize || addressFor(pub) != tx.From {
+		return fmt.Errorf("public key does not match sender")
+	}
+	sig, err := hex.DecodeString(tx.Signature)
+	if err != nil || !ed25519.Verify(ed25519.PublicKey(pub), tx.signingBytes(), sig) {
+		return fmt.Errorf("invalid transaction signature")
 	}
 	return nil
 }
 
-// Block is a batch of nothing, sealed with wasted computation.
 type Block struct {
 	Index     int           `json:"index"`
 	Timestamp int64         `json:"timestamp"`
 	Txs       []Transaction `json:"txs"`
 	PrevHash  string        `json:"prev_hash"`
 	Nonce     int64         `json:"nonce"`
-	Reward    int64         `json:"reward"` // always 0
+	Miner     string        `json:"miner"`
+	Reward    int64         `json:"reward_atoms"`
 	Hash      string        `json:"hash"`
 }
 
 func (b *Block) computeHash() string {
 	payload, _ := json.Marshal(struct {
+		Chain     string        `json:"chain"`
 		Index     int           `json:"index"`
 		Timestamp int64         `json:"timestamp"`
 		Txs       []Transaction `json:"txs"`
 		PrevHash  string        `json:"prev_hash"`
 		Nonce     int64         `json:"nonce"`
-		Reward    int64         `json:"reward"`
-	}{b.Index, b.Timestamp, b.Txs, b.PrevHash, b.Nonce, b.Reward})
+		Miner     string        `json:"miner"`
+		Reward    int64         `json:"reward_atoms"`
+	}{ChainID, b.Index, b.Timestamp, b.Txs, b.PrevHash, b.Nonce, b.Miner, b.Reward})
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
 }
 
-// Mine performs Proof of Nothing: burn CPU until the hash looks important.
 func (b *Block) Mine(difficulty int) {
 	target := strings.Repeat("0", difficulty)
 	for {
@@ -63,24 +98,15 @@ func (b *Block) Mine(difficulty int) {
 	}
 }
 
-func NewBlock(index int, prevHash string, txs []Transaction) *Block {
+func NewBlock(index int, prevHash string, txs []Transaction, miner string) *Block {
 	if txs == nil {
 		txs = []Transaction{}
 	}
-	return &Block{
-		Index:     index,
-		Timestamp: time.Now().Unix(),
-		Txs:       txs,
-		PrevHash:  prevHash,
-		Reward:    0, // always
-	}
+	return &Block{Index: index, Timestamp: time.Now().Unix(), Txs: txs, PrevHash: prevHash, Miner: miner, Reward: rewardAt(time.Now().Unix())}
 }
 
 func GenesisBlock() *Block {
-	b := NewBlock(0, "0", []Transaction{
-		{From: "nobody", To: "everybody", Amount: 0, Memo: "In nothing we trust."},
-	})
-	b.Timestamp = 1728000000 // fixed, so genesis is deterministic-ish and noble
-	b.Mine(4)
+	b := &Block{Index: 0, Timestamp: 1728000000, Txs: []Transaction{}, PrevHash: "0"}
+	b.Mine(Difficulty)
 	return b
 }
