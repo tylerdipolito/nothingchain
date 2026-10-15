@@ -15,14 +15,29 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 )
+
+// BlockTemplate represents the BIP-22/23 result of Bitcoin Core getblocktemplate.
+type BlockTemplate struct {
+	Version                  int32    `json:"version"`
+	Rules                    []string `json:"rules"`
+	PreviousBlockHash        string   `json:"previousblockhash"`
+	CoinbaseValue            int64    `json:"coinbasevalue"`
+	Bits                     string   `json:"bits"`
+	Height                   int64    `json:"height"`
+	CurTime                  uint32   `json:"curtime"`
+	DefaultWitnessCommitment string   `json:"default_witness_commitment"`
+}
 
 // SolvedBitcoinBlock holds metadata and raw serialized bytes of a mined Bitcoin block.
 type SolvedBitcoinBlock struct {
@@ -41,6 +56,7 @@ type SolvedBitcoinBlock struct {
 	RawHex     string `json:"raw_block_hex"`
 	SolvedAt   int64  `json:"solved_at"`
 	DualWin    bool   `json:"dual_win"`
+	Submitted  bool   `json:"submitted_to_node"`
 }
 
 // BitcoinChainState manages parent Bitcoin blockchain state and accounting in the pool.
@@ -54,6 +70,9 @@ type BitcoinChainState struct {
 	TotalMinedSat   int64                `json:"total_mined_satoshis"`
 	TotalMinedBTC   string               `json:"total_mined_btc"`
 	RecentBlocks    []SolvedBitcoinBlock `json:"recent_blocks"`
+	RPCConnected    bool                 `json:"rpc_connected"`
+	RPCNetwork      string               `json:"rpc_network"`
+	RPCURL          string               `json:"rpc_url"`
 }
 
 // GoChainMergedState tracks the auxiliary GoChain state and accounting in the pool.
@@ -83,6 +102,8 @@ type MergedStratumJob struct {
 	Bits         uint32
 	Ntime        uint32
 	CleanJobs    bool
+	HasWitness   bool
+	Template     *BlockTemplate
 }
 
 // MergedEventLogEntry represents an event in the merged mining pool (share, block, dual-win).
@@ -98,6 +119,7 @@ type MergedMiningServer struct {
 	ListenAddr string
 	DashAddr   string
 	ShareDiff  float64
+	BtcRPCURL  string
 
 	mu              sync.RWMutex
 	btcState        *BitcoinChainState
@@ -176,13 +198,140 @@ func BitcoinAddressToScript(addr string) []byte {
 	return append([]byte{byte(len(p2pkh))}, p2pkh...)
 }
 
+func getWslIP() string {
+	out, err := exec.Command("wsl", "hostname", "-I").Output()
+	if err == nil {
+		parts := strings.Fields(string(out))
+		if len(parts) > 0 {
+			return parts[0]
+		}
+	}
+	return "127.0.0.1"
+}
+
+func encodeBIP34Height(height int64) []byte {
+	if height == 0 {
+		return []byte{0x00}
+	} else if height >= 1 && height <= 16 {
+		return []byte{byte(0x51 + height - 1)}
+	}
+	var b []byte
+	val := height
+	for val > 0 {
+		b = append(b, byte(val&0xff))
+		val >>= 8
+	}
+	if b[len(b)-1]&0x80 != 0 {
+		b = append(b, 0x00)
+	}
+	return append([]byte{byte(len(b))}, b...)
+}
+
+// AssembleStratumCoinbase reassembles non-witness and SegWit-witness coinbases from Stratum parts.
+func AssembleStratumCoinbase(coinb1, en1, en2, coinb2 []byte, hasWitness bool) ([]byte, []byte) {
+	nonWit := append(append(append(append([]byte{}, coinb1...), en1...), en2...), coinb2...)
+	if !hasWitness {
+		return nonWit, nonWit
+	}
+	buf := new(bytes.Buffer)
+	buf.Write(nonWit[:4])               // Version
+	buf.Write([]byte{0x00, 0x01})       // SegWit marker & flag
+	buf.Write(nonWit[4 : len(nonWit)-4]) // In & Out
+	buf.Write([]byte{0x01, 0x20})       // 1 witness item of 32 bytes
+	buf.Write(make([]byte, 32))         // 32-byte witness reserved value
+	buf.Write(nonWit[len(nonWit)-4:])   // LockTime
+	return buf.Bytes(), nonWit
+}
+
+func (s *MergedMiningServer) callBitcoinCoreRPC(method string, params []any) (json.RawMessage, error) {
+	if s.BtcRPCURL == "" {
+		return nil, fmt.Errorf("bitcoin core RPC not configured")
+	}
+	u, err := url.Parse(s.BtcRPCURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid bitcoin RPC URL: %w", err)
+	}
+
+	reqBody, _ := json.Marshal(map[string]any{
+		"jsonrpc": "1.0",
+		"id":      "stratum",
+		"method":  method,
+		"params":  params,
+	})
+
+	postURL := fmt.Sprintf("%s://%s%s", u.Scheme, u.Host, u.Path)
+	if u.Path == "" {
+		postURL += "/"
+	}
+	req, err := http.NewRequest("POST", postURL, bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, err
+	}
+	if u.User != nil {
+		pass, _ := u.User.Password()
+		req.SetBasicAuth(u.User.Username(), pass)
+	}
+	req.Header.Set("Content-Type", "text/plain;")
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var rpcResp struct {
+		Result json.RawMessage `json:"result"`
+		Error  *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(body, &rpcResp); err != nil {
+		return nil, fmt.Errorf("bitcoin RPC decode error: %w (body: %s)", err, string(body))
+	}
+	if rpcResp.Error != nil {
+		return nil, fmt.Errorf("bitcoin RPC error %d: %s", rpcResp.Error.Code, rpcResp.Error.Message)
+	}
+	return rpcResp.Result, nil
+}
+
+func (s *MergedMiningServer) fetchBitcoinCoreTemplate() (*BlockTemplate, error) {
+	res, err := s.callBitcoinCoreRPC("getblocktemplate", []any{map[string]any{"rules": []string{"segwit"}}})
+	if err != nil {
+		return nil, err
+	}
+	var tmpl BlockTemplate
+	if err := json.Unmarshal(res, &tmpl); err != nil {
+		return nil, err
+	}
+	return &tmpl, nil
+}
+
+func (s *MergedMiningServer) submitBitcoinCoreBlock(rawBlockHex string) error {
+	res, err := s.callBitcoinCoreRPC("submitblock", []any{rawBlockHex})
+	if err != nil {
+		return err
+	}
+	strRes := strings.Trim(string(res), "\" \r\n")
+	if strRes != "null" && strRes != "" {
+		return fmt.Errorf("submitblock rejected: %s", strRes)
+	}
+	return nil
+}
+
 // NewMergedMiningServer constructs a new True Merged Mining server instance.
-func NewMergedMiningServer(listenAddr, dashAddr, nodeURL, goMiner, btcMiner string, shareDiff float64, btcBits, goBits uint32) *MergedMiningServer {
+func NewMergedMiningServer(listenAddr, dashAddr, nodeURL, goMiner, btcMiner, btcRPCURL string, shareDiff float64, btcBits, goBits uint32) *MergedMiningServer {
 	if shareDiff <= 0 {
 		shareDiff = 16.0
 	}
 	if btcBits == 0 {
-		btcBits = DefaultGoAuxBits // 0x1f00ffff for accessible test verification
+		btcBits = DefaultGoAuxBits
 	}
 	if goBits == 0 {
 		goBits = DefaultGoAuxBits
@@ -194,10 +343,11 @@ func NewMergedMiningServer(listenAddr, dashAddr, nodeURL, goMiner, btcMiner stri
 		goMiner = "go19c5446aa51196d4ef9e8036ec203e70333e178c1351baf7c12f96229077c2272"
 	}
 
-	return &MergedMiningServer{
+	srv := &MergedMiningServer{
 		ListenAddr: listenAddr,
 		DashAddr:   dashAddr,
 		ShareDiff:  shareDiff,
+		BtcRPCURL:  btcRPCURL,
 		btcState: &BitcoinChainState{
 			Height:       885000,
 			TipHash:      "00000000000000000001a4bc389d7e6f12034981729384729183749283749283",
@@ -218,6 +368,45 @@ func NewMergedMiningServer(listenAddr, dashAddr, nodeURL, goMiner, btcMiner stri
 		shareHistory:    make([]shareRecord, 0),
 		eventLog:        make([]MergedEventLogEntry, 0),
 	}
+
+	// Probe Bitcoin Core RPC if auto or configured
+	if srv.BtcRPCURL == "" || srv.BtcRPCURL == "auto" {
+		candidates := []string{
+			fmt.Sprintf("http://bitproof:bitproofpassword@%s:18443", getWslIP()),
+			"http://bitproof:bitproofpassword@127.0.0.1:18443",
+		}
+		for _, cand := range candidates {
+			srv.BtcRPCURL = cand
+			if res, err := srv.callBitcoinCoreRPC("getblockchaininfo", []any{}); err == nil {
+				var info struct {
+					Chain  string `json:"chain"`
+					Blocks int64  `json:"blocks"`
+				}
+				_ = json.Unmarshal(res, &info)
+				srv.btcState.RPCConnected = true
+				srv.btcState.RPCNetwork = info.Chain
+				srv.btcState.RPCURL = cand
+				log.Printf("[MERGED-BTC] 🔌 Connected to live Bitcoin Core (%s) at %s", info.Chain, cand)
+				break
+			}
+		}
+		if !srv.btcState.RPCConnected {
+			srv.BtcRPCURL = ""
+		}
+	} else {
+		if res, err := srv.callBitcoinCoreRPC("getblockchaininfo", []any{}); err == nil {
+			var info struct {
+				Chain string `json:"chain"`
+			}
+			_ = json.Unmarshal(res, &info)
+			srv.btcState.RPCConnected = true
+			srv.btcState.RPCNetwork = info.Chain
+			srv.btcState.RPCURL = srv.BtcRPCURL
+			log.Printf("[MERGED-BTC] 🔌 Connected to live Bitcoin Core (%s) at %s", info.Chain, srv.BtcRPCURL)
+		}
+	}
+
+	return srv
 }
 
 // logEventLocked appends an event while s.mu is already held.
@@ -255,40 +444,70 @@ func (s *MergedMiningServer) CreateNewMergedJob(candidate *Block, goBits uint32,
 		return nil, fmt.Errorf("invalid candidate GoChain hash: %w", err)
 	}
 
+	var tmpl *BlockTemplate
+	if s.BtcRPCURL != "" {
+		if t, err := s.fetchBitcoinCoreTemplate(); err == nil && t != nil {
+			tmpl = t
+			s.btcState.Height = tmpl.Height
+			s.btcState.TipHash = tmpl.PreviousBlockHash
+			s.btcState.BlockSubsidy = tmpl.CoinbaseValue
+			s.btcState.RPCConnected = true
+			if bitsUint64, err := strconv.ParseUint(tmpl.Bits, 16, 32); err == nil {
+				s.btcState.TargetBits = uint32(bitsUint64)
+			}
+		}
+	}
+
 	btcHeight := s.btcState.Height
 	btcPrevHash := s.btcState.TipHash
 	btcBits := s.btcState.TargetBits
 
-	// 1. Bitcoin Coinbase Part 1:
-	// Version(4B) + InCount(1B) + PrevTx(32B zeros) + PrevOutIndex(4B 0xffffffff) + ScriptSigLen(1B)
-	// + BIP34 Height Push + Pool Tag + AuxPoWMagic(4B) + GoCandidateHash(32B)
-	tag := []byte("/GoChain-TrueMergedMining/")
-	scriptSigLen := byte(3 + len(tag) + len(AuxPoWMagic) + 32 + 4 + 4) // 4B extranonce1 + 4B extranonce2
+	// 1. Build Stratum coinb1 with BIP-34 height & AuxPoW payload
+	bip34 := encodeBIP34Height(btcHeight)
+	tag := []byte("/Bitproof-GoChain/")
+	magic := AuxPoWMagic
+	auxPayload := new(bytes.Buffer)
+	auxPayload.Write(tag)
+	auxPayload.Write(magic)
+	auxPayload.Write(candidateHashBytes)
+	auxBytes := auxPayload.Bytes()
+
+	totalAuxLen := len(auxBytes) + 4 + 4 // 4B extranonce1 + 4B extranonce2
+	scriptSigTotalLen := len(bip34) + 1 + totalAuxLen
 
 	coinb1 := new(bytes.Buffer)
-	coinb1.Write([]byte{0x01, 0x00, 0x00, 0x00}) // Tx Version 1
-	coinb1.WriteByte(0x01)                       // 1 input
-	coinb1.Write(make([]byte, 32))               // Coinbase previous out hash
-	coinb1.Write([]byte{0xff, 0xff, 0xff, 0xff}) // Previous out index
-	coinb1.WriteByte(scriptSigLen)
-	// BIP-34 height serialized: 3 bytes little endian
-	heightBytes := []byte{byte(btcHeight & 0xff), byte((btcHeight >> 8) & 0xff), byte((btcHeight >> 16) & 0xff)}
-	coinb1.WriteByte(byte(len(heightBytes)))
-	coinb1.Write(heightBytes)
-	coinb1.Write(tag)
-	coinb1.Write(AuxPoWMagic)
-	coinb1.Write(candidateHashBytes)
+	binary.Write(coinb1, binary.LittleEndian, int32(1)) // Tx Version 1
+	coinb1.WriteByte(0x01)                              // 1 input
+	coinb1.Write(make([]byte, 32))                      // Coinbase previous out hash
+	coinb1.Write([]byte{0xff, 0xff, 0xff, 0xff})        // Previous out index
+	coinb1.WriteByte(byte(scriptSigTotalLen))
+	coinb1.Write(bip34)
+	coinb1.WriteByte(byte(totalAuxLen))
+	coinb1.Write(auxBytes)
 
-	// 2. Bitcoin Coinbase Part 2:
-	// Sequence(4B) + OutCount(1B) + Satoshis(8B) + ScriptPubKeyLen(1B) + ScriptPubKey(25B) + LockTime(4B)
+	// 2. Build Stratum coinb2 with sequence, payout output, witness commitment, and locktime
 	coinb2 := new(bytes.Buffer)
-	coinb2.Write([]byte{0x00, 0x00, 0x00, 0x00}) // Sequence
-	coinb2.WriteByte(0x01)                       // 1 output
-	// Bitcoin Block Subsidy (3.125 BTC = 312,500,000 satoshis)
+	coinb2.Write([]byte{0xff, 0xff, 0xff, 0xff}) // Sequence
+	hasWitness := tmpl != nil && tmpl.DefaultWitnessCommitment != ""
+	if hasWitness {
+		coinb2.WriteByte(0x02) // 2 outputs
+	} else {
+		coinb2.WriteByte(0x01) // 1 output
+	}
 	binary.Write(coinb2, binary.LittleEndian, uint64(s.btcState.BlockSubsidy))
-
 	coinb2.Write(BitcoinAddressToScript(s.btcState.MinerAddress))
+	if hasWitness {
+		binary.Write(coinb2, binary.LittleEndian, uint64(0)) // 0 satoshis
+		witScript, _ := hex.DecodeString(tmpl.DefaultWitnessCommitment)
+		coinb2.WriteByte(byte(len(witScript)))
+		coinb2.Write(witScript)
+	}
 	coinb2.Write([]byte{0x00, 0x00, 0x00, 0x00}) // LockTime
+
+	version := uint32(0x20000000)
+	if tmpl != nil && tmpl.Version != 0 {
+		version = uint32(tmpl.Version)
+	}
 
 	job := &MergedStratumJob{
 		JobID:        jobID,
@@ -300,10 +519,12 @@ func (s *MergedMiningServer) CreateNewMergedJob(candidate *Block, goBits uint32,
 		Coinb1:       coinb1.Bytes(),
 		Coinb2:       coinb2.Bytes(),
 		MerkleBranch: []string{}, // Coinbase is only tx in candidate parent
-		Version:      0x20000000,
+		Version:      version,
 		Bits:         btcBits,
 		Ntime:        uint32(time.Now().Unix()),
 		CleanJobs:    clean,
+		HasWitness:   hasWitness,
+		Template:     tmpl,
 	}
 
 	s.currentJob = job
@@ -576,12 +797,8 @@ func (s *MergedMiningServer) handleSubmit(session *StratumSession, req *StratumR
 	}
 	s.mu.Unlock()
 
-	coinbase := append([]byte{}, job.Coinb1...)
-	coinbase = append(coinbase, extranonce1Bytes...)
-	coinbase = append(coinbase, extranonce2Bytes...)
-	coinbase = append(coinbase, job.Coinb2...)
-
-	cbHash := DoubleSHA256(coinbase)
+	rawCoinbaseWit, nonWitCoinbase := AssembleStratumCoinbase(job.Coinb1, extranonce1Bytes, extranonce2Bytes, job.Coinb2, job.HasWitness)
+	cbHash := DoubleSHA256(nonWitCoinbase)
 	merkleRootHex := hex.EncodeToString(reverseBytes(cbHash[:]))
 
 	// 2. Parse ntime and nonce
@@ -680,13 +897,14 @@ func (s *MergedMiningServer) handleSubmit(session *StratumSession, req *StratumR
 	})
 
 	// 4. Handle Dual Merged Win vs Independent Wins
+	subsidyBTC := fmt.Sprintf("%.8f BTC", float64(s.btcState.BlockSubsidy)/1e8)
 	if isGoWin && isBtcWin {
 		atomic.AddUint64(&s.DualWins, 1)
 		log.Printf("\n" + strings.Repeat("=", 68))
 		log.Printf("[MERGED] 💎💎 DUAL MERGED MINING WIN! ONE COMPUTATION SOLVED BOTH CHAINS! 💎💎")
 		log.Printf("[MERGED] Parent Nonce: 0x%08x | Hash: %s", nonceVal, parentHashHex)
-		log.Printf("[MERGED] Won Bitcoin Block #%d (+3.125 BTC) AND GoChain Block #%d (+10 GO)!",
-			job.BtcHeight, job.GoCandidate.Index)
+		log.Printf("[MERGED] Won Bitcoin Block #%d (+%s) AND GoChain Block #%d (+10 GO)!",
+			job.BtcHeight, subsidyBTC, job.GoCandidate.Index)
 		log.Printf(strings.Repeat("=", 68) + "\n")
 
 		s.LogEvent("dual_win", fmt.Sprintf("💎 DUAL WIN: BTC Block #%d & GO Block #%d from same hash!",
@@ -694,7 +912,7 @@ func (s *MergedMiningServer) handleSubmit(session *StratumSession, req *StratumR
 			"hash":        parentHashHex,
 			"btc_height":  job.BtcHeight,
 			"go_height":   job.GoCandidate.Index,
-			"reward_btc":  "3.12500000 BTC",
+			"reward_btc":  subsidyBTC,
 			"reward_go":   "10.00000000 GO",
 			"worker":      session.Worker,
 		})
@@ -707,7 +925,7 @@ func (s *MergedMiningServer) handleSubmit(session *StratumSession, req *StratumR
 	if isGoWin {
 		auxpow := &AuxPoW{
 			ParentHeader:   btcHeader,
-			CoinbaseTxHex:  hex.EncodeToString(coinbase),
+			CoinbaseTxHex:  hex.EncodeToString(nonWitCoinbase),
 			CoinbaseBranch: job.MerkleBranch,
 			CoinbaseIndex:  0,
 		}
@@ -747,7 +965,25 @@ func (s *MergedMiningServer) handleSubmit(session *StratumSession, req *StratumR
 	if isBtcWin {
 		rawHdr, _ := btcHeader.Serialize80Bytes()
 		rawBlock := append(rawHdr, byte(1)) // 1 transaction
-		rawBlock = append(rawBlock, coinbase...)
+		rawBlock = append(rawBlock, rawCoinbaseWit...)
+		rawBlockHex := hex.EncodeToString(rawBlock)
+
+		submittedToCore := false
+		if s.BtcRPCURL != "" {
+			if err := s.submitBitcoinCoreBlock(rawBlockHex); err == nil {
+				submittedToCore = true
+				log.Printf("[MERGED-BTC] 🎉🎉🎉 Bitcoin Core Node ACCEPTED Block #%d! Tip: %s", job.BtcHeight, parentHashHex)
+				s.LogEvent("btc_block", fmt.Sprintf("Bitcoin Core Node ACCEPTED Block #%d into chain tip (+%s)",
+					job.BtcHeight, subsidyBTC), map[string]any{
+					"height": job.BtcHeight,
+					"hash":   parentHashHex,
+					"miner":  s.btcState.MinerAddress,
+					"reward": subsidyBTC,
+				})
+			} else {
+				log.Printf("[MERGED-BTC] Bitcoin Core submission error: %v", err)
+			}
+		}
 
 		solvedBtcBlock = &SolvedBitcoinBlock{
 			Height:     job.BtcHeight,
@@ -760,16 +996,17 @@ func (s *MergedMiningServer) handleSubmit(session *StratumSession, req *StratumR
 			Version:    fmt.Sprintf("0x%08x", btcHeader.Version),
 			TxCount:    1,
 			RewardSat:  s.btcState.BlockSubsidy,
-			RewardBTC:  fmt.Sprintf("%.8f BTC", float64(s.btcState.BlockSubsidy)/1e8),
+			RewardBTC:  subsidyBTC,
 			Miner:      s.btcState.MinerAddress,
-			RawHex:     hex.EncodeToString(rawBlock),
+			RawHex:     rawBlockHex,
 			SolvedAt:   time.Now().Unix(),
 			DualWin:    isGoWin,
+			Submitted:  submittedToCore,
 		}
 
 		s.recordBtcBlock(solvedBtcBlock)
-		log.Printf("[MERGED-BTC] 🏆 Solved Bitcoin Block #%d! (+3.125 BTC) Hash: %s",
-			solvedBtcBlock.Height, parentHashHex)
+		log.Printf("[MERGED-BTC] 🏆 Solved Bitcoin Block #%d! (+%s) Hash: %s",
+			solvedBtcBlock.Height, subsidyBTC, parentHashHex)
 
 		if s.OnBtcBlockMined != nil {
 			s.OnBtcBlockMined(solvedBtcBlock)
@@ -976,6 +1213,9 @@ func (s *MergedMiningServer) StartDashboard(addr string) error {
 				"total_mined_btc":     fmt.Sprintf("%.8f BTC", float64(btcCopy.TotalMinedSat)/1e8),
 				"miner_address":       btcCopy.MinerAddress,
 				"recent_blocks":       btcRecent,
+				"rpc_connected":       btcCopy.RPCConnected,
+				"rpc_network":         btcCopy.RPCNetwork,
+				"rpc_url":             btcCopy.RPCURL,
 			},
 			"gochain_aux": map[string]any{
 				"height":              goCopy.CurrentHeight,
@@ -1020,6 +1260,7 @@ func runMergedStratum(args []string) error {
 	goBits := fs.Uint("go-bits", uint(DefaultGoAuxBits), "GoChain initial target bits")
 	diff := fs.Float64("diff", 16.0, "Stratum share difficulty for Bitaxe")
 	wallet := fs.String("wallet", WalletFile, "wallet file for GoChain miner")
+	btcRPC := fs.String("btc-rpc", "auto", "Bitcoin Core RPC URL (or 'auto' to auto-connect to WSL/local node)")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -1038,7 +1279,7 @@ func runMergedStratum(args []string) error {
 	stratumAddr := fmt.Sprintf("%s:%d", *host, *port)
 	dashAddr := fmt.Sprintf("%s:%d", *host, *dash)
 
-	srv := NewMergedMiningServer(stratumAddr, dashAddr, *node, defaultGoMiner, *btcMiner, *diff, uint32(*btcBits), uint32(*goBits))
+	srv := NewMergedMiningServer(stratumAddr, dashAddr, *node, defaultGoMiner, *btcMiner, *btcRPC, *diff, uint32(*btcBits), uint32(*goBits))
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -1318,7 +1559,10 @@ const mergedDashboardHTML = `<!DOCTYPE html>
             <span>🪙</span>
             <span>Bitcoin Parent Network (BTC)</span>
           </div>
-          <span class="badge badge-btc">PARENT CHAIN</span>
+          <div style="display: flex; gap: 6px;">
+            <span class="badge" id="btc-rpc-badge" style="background: rgba(34, 197, 94, 0.2); color: #22c55e; border: 1px solid rgba(34, 197, 94, 0.4); display: none;">BITCOIN CORE RPC</span>
+            <span class="badge badge-btc">PARENT CHAIN</span>
+          </div>
         </div>
         <div class="stats-row">
           <div class="stat-box">
@@ -1331,7 +1575,7 @@ const mergedDashboardHTML = `<!DOCTYPE html>
           </div>
           <div class="stat-box">
             <div class="stat-label">Block Subsidy</div>
-            <div class="stat-val val-btc">3.125 BTC</div>
+            <div class="stat-val val-btc" id="btc-subsidy">3.125 BTC</div>
           </div>
         </div>
         <div class="stats-row">
@@ -1446,6 +1690,14 @@ const mergedDashboardHTML = `<!DOCTYPE html>
         document.getElementById("btc-blocks-won").textContent = d.bitcoin_parent.blocks_mined;
         document.getElementById("btc-total-earned").textContent = d.bitcoin_parent.total_mined_btc;
         document.getElementById("btc-miner-addr").textContent = d.bitcoin_parent.miner_address;
+        if (document.getElementById("btc-subsidy") && d.bitcoin_parent.subsidy_btc) {
+          document.getElementById("btc-subsidy").textContent = d.bitcoin_parent.subsidy_btc;
+        }
+        if (d.bitcoin_parent && d.bitcoin_parent.rpc_connected) {
+          const badge = document.getElementById("btc-rpc-badge");
+          badge.textContent = "BITCOIN CORE v28.0 (" + (d.bitcoin_parent.rpc_network || "regtest").toUpperCase() + ")";
+          badge.style.display = "inline-block";
+        }
 
         // GoChain
         document.getElementById("go-height").textContent = "#" + d.gochain_aux.height;
