@@ -217,6 +217,52 @@
     </div>
     <section class="card pool">
       <h2>wGO / testUSD · independent AMM</h2>
+      <div
+        style="
+          display: flex;
+          justify-content: space-between;
+          gap: 16px;
+          flex-wrap: wrap;
+          align-items: center;
+        "
+      >
+        <div>
+          <label>POOL SPOT PRICE · testUSD PER wGO</label>
+          <p class="value" id="spotPrice">—</p>
+        </div>
+        <label
+          >Candle interval
+          <select id="candleInterval">
+            <option value="1m">1 minute</option>
+            <option value="5m">5 minutes</option>
+            <option value="1h">1 hour</option>
+          </select></label
+        >
+      </div>
+      <p class="caption">
+        Simulated testUSD prices, not a real dollar valuation. Candles show
+        average execution prices of finalized swaps, including fees; the reserve
+        ratio is shown separately.
+      </p>
+      <svg
+        id="priceChart"
+        viewBox="0 0 1000 360"
+        role="img"
+        aria-label="Finalized wGO swap candlesticks and testUSD volume"
+        style="width: 100%; background: #0c141b; border-radius: 10px"
+      ></svg>
+      <p id="chartNotice" class="muted">Loading captured swap history…</p>
+      <p id="candleDetail" class="caption" aria-live="polite">
+        Hover or focus a candle for OHLC and volume. No trades means no candle.
+      </p>
+      <details>
+        <summary>Recent finalized trades</summary>
+        <div
+          id="recentTrades"
+          class="caption"
+          style="overflow-wrap: anywhere"
+        ></div>
+      </details>
       <p class="value" id="reserves">Not seeded</p>
       <p class="muted" id="poolAddress"></p>
       <p class="caption">
@@ -287,6 +333,193 @@
     <script nonce="__TOKEN__">
       const token = "__TOKEN__";
       const el = (id) => document.getElementById(id);
+      let chartData = null;
+      const svgNS = "http://www.w3.org/2000/svg";
+      function drawChart() {
+        const svg = el("priceChart");
+        svg.replaceChildren();
+        const add = (tag, attrs, text, parent = svg) => {
+          const node = document.createElementNS(svgNS, tag);
+          for (const [key, value] of Object.entries(attrs))
+            node.setAttribute(key, String(value));
+          if (text !== undefined) node.textContent = text;
+          parent.appendChild(node);
+          return node;
+        };
+        const data = chartData?.candles?.[el("candleInterval").value] || [];
+        if (!data.length) {
+          add(
+            "text",
+            { x: 500, y: 150, "text-anchor": "middle", fill: "#a1b3bf" },
+            "No captured finalized swaps yet",
+          );
+          add(
+            "text",
+            { x: 500, y: 185, "text-anchor": "middle", fill: "#a1b3bf" },
+            "Mining and quotes do not create trading candles.",
+          );
+          return;
+        }
+        const from = data[0].time,
+          seconds = { "1m": 60, "5m": 300, "1h": 3600 }[
+            el("candleInterval").value
+          ],
+          span = Math.max(seconds, data.at(-1).time - from + seconds);
+        let low = Math.min(...data.map((c) => Number(c.low))),
+          high = Math.max(...data.map((c) => Number(c.high)));
+        const pad = Math.max((high - low) * 0.12, high * 0.002, 1e-12);
+        low -= pad;
+        high += pad;
+        const x = (t) => 60 + ((t - from + seconds / 2) / span) * 830,
+          y = (p) => 235 - ((p - low) / (high - low)) * 210;
+        const volumeMax = Math.max(
+            ...data.map((c) => Number(c.usdVolumeAtoms)),
+          ),
+          width = Math.max(1, Math.min(18, ((830 * seconds) / span) * 0.65));
+        for (let i = 0; i < 5; i++) {
+          const p = low + ((high - low) * i) / 4,
+            py = y(p);
+          add("line", { x1: 55, x2: 900, y1: py, y2: py, stroke: "#243641" });
+          add(
+            "text",
+            { x: 910, y: py + 4, fill: "#a1b3bf", "font-size": 12 },
+            p.toPrecision(7),
+          );
+        }
+        add(
+          "text",
+          { x: 60, y: 265, fill: "#a1b3bf", "font-size": 12 },
+          "testUSD volume",
+        );
+        for (const c of data) {
+          const color =
+              Number(c.close) >= Number(c.open) ? "#aaf2cc" : "#f58b89",
+            cx = x(c.time),
+            top = y(Math.max(Number(c.open), Number(c.close))),
+            bottom = y(Math.min(Number(c.open), Number(c.close)));
+          const detail =
+            new Date(c.time * 1000).toISOString() +
+            " · O " +
+            c.open +
+            " · H " +
+            c.high +
+            " · L " +
+            c.low +
+            " · C " +
+            c.close +
+            " · " +
+            (Number(c.usdVolumeAtoms) / 1e8).toFixed(8) +
+            " testUSD · " +
+            c.trades +
+            " trades";
+          const g = add("g", {
+            tabindex: 0,
+            role: "img",
+            "aria-label": detail,
+          });
+          add("title", {}, detail, g);
+          g.addEventListener(
+            "mouseenter",
+            () => (el("candleDetail").textContent = detail),
+          );
+          g.addEventListener(
+            "focus",
+            () => (el("candleDetail").textContent = detail),
+          );
+          add(
+            "line",
+            {
+              x1: cx,
+              x2: cx,
+              y1: y(Number(c.high)),
+              y2: y(Number(c.low)),
+              stroke: color,
+              "stroke-width": 2,
+            },
+            undefined,
+            g,
+          );
+          add(
+            "rect",
+            {
+              x: cx - width / 2,
+              y: top,
+              width,
+              height: Math.max(2, bottom - top),
+              fill: color,
+            },
+            undefined,
+            g,
+          );
+          const height = (Number(c.usdVolumeAtoms) / volumeMax) * 48;
+          add(
+            "rect",
+            {
+              x: cx - width / 2,
+              y: 325 - height,
+              width,
+              height,
+              fill: color,
+              opacity: 0.55,
+            },
+            undefined,
+            g,
+          );
+        }
+        for (const t of [from, from + span / 2, from + span - seconds])
+          add(
+            "text",
+            {
+              x: x(t),
+              y: 350,
+              "text-anchor": "middle",
+              fill: "#a1b3bf",
+              "font-size": 11,
+            },
+            new Date(t * 1000).toISOString().slice(5, 16).replace("T", " "),
+          );
+      }
+      function showChart(s) {
+        chartData = s.chart;
+        el("spotPrice").textContent = s.pool
+          ? (Number(s.pool.testUSD) / Number(s.pool.wGO)).toFixed(8)
+          : "—";
+        el("chartNotice").textContent = chartData?.error
+          ? "Chart unavailable: " + chartData.error
+          : (chartData?.notice || "No history available") +
+            " Captured swaps: " +
+            (chartData?.tradeCount || 0) +
+            "." +
+            (chartData?.unavailable
+              ? " Some RPC history is unavailable."
+              : "") +
+            (chartData?.backlog
+              ? " Refresh to capture the remaining history."
+              : "");
+        const list = el("recentTrades");
+        list.replaceChildren();
+        for (const trade of chartData?.recent || []) {
+          const p = document.createElement("p");
+          p.textContent =
+            new Date(trade.time * 1000).toISOString() +
+            " · " +
+            trade.side.toUpperCase() +
+            " " +
+            (Number(trade.goAtoms) / 1e8).toFixed(8) +
+            " wGO · " +
+            (Number(trade.usdAtoms) / 1e8).toFixed(8) +
+            " testUSD · price " +
+            trade.price +
+            " · " +
+            trade.signature;
+          list.appendChild(p);
+        }
+        if (!list.children.length)
+          list.textContent =
+            "No captured trades. Older pruned transactions cannot be reconstructed.";
+        drawChart();
+      }
+      el("candleInterval").onchange = drawChart;
       const intentSlot = "go-bridge.intent.v1.__BRIDGE_ID__";
       const transactions = new Set(["wrap", "unwrap", "seed-pool", "swap"]);
       function savedIntent() {
@@ -336,6 +569,7 @@
         return result;
       }
       function render(s) {
+        showChart(s);
         el("go").textContent = s.user.GO + " GO";
         el("wgo").textContent = s.user.wGO + " wGO";
         el("usdBalance").textContent = "Wallet: " + s.user.testUSD + " testUSD";

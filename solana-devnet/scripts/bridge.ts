@@ -32,6 +32,7 @@ import {
   PROGRAM,
 } from "../src/solana";
 import { outputFor } from "../src/market";
+import { chartHistory } from "./bridge-chart";
 import {
   amount,
   backing,
@@ -724,6 +725,16 @@ export class Bridge {
         testUSD: display(BigInt(await tokenBalance(this.usd()))),
       },
       pool,
+      chart: await chartHistory(
+        this.c,
+        this.directory,
+        this.config.solGenesis,
+        this.config.mint,
+        this.config.usdMint,
+      ).catch((e: Error) => ({
+        error: e.message,
+        notice: "Chart unavailable; no prices were invented.",
+      })),
       operations: this.journal.state.operations.map(({ sol, go, ...op }) => ({
         ...op,
         solSignature: sol?.signature,

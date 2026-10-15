@@ -6,6 +6,16 @@ Original baseline: abd9a86af75162e3dd3efc1e70d114e67261c576
 
 ## October 15 review follow-up
 
+- Bridge pool candlesticks now use captured finalized direct swaps, with 1m/5m/1h
+  OHLC, testUSD volume, reserve-ratio spot price and recent trades. The cache is
+  synced locally and bound to genesis/pool; older pruned history is explicitly
+  incomplete. No prices or empty-interval candles are fabricated. Chart failures
+  are separate from custody/issuance checks. See `bridge-chart.ts` and its tests.
+- Chart verification: 23 tests/build passed, real finalized swap produced matching
+  execution price/volume, browser timeframe switching rendered correctly and a
+  new process retained captured history. The existing user's pool was not traded
+  just to seed a chart; the verification used the separate disposable pool.
+
 - Bridge hardening: transaction HTTP requests now require durable request IDs tied
   to exact parameters; the browser retains unfinished intents across reloads and
   uses Web Locks to prevent competing tabs from preparing transactions together.

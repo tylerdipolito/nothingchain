@@ -177,6 +177,32 @@ liquidity seed, quote/swap, reload during submission, recovery, GO lock/mint,
 wGO burn/GO release and manual mining on disposable wallets. The isolated browser
 round trip ended with custody and supply both 9 and no pending withdrawals.
 
+## Pool candlesticks
+
+The bridge pool view includes a reserve-ratio spot price, 1-minute / 5-minute /
+1-hour candlesticks, testUSD volume bars and recent trades. Candle prices are
+testUSD per wGO, derived from the gross execution amounts (including the input
+fee), not a real dollar value or the marginal reserve-ratio price. OHLC compares
+integer ratios and uses finalized chain slot/transaction ordering; floating-point
+conversion is limited to the display. Hover/focus a candle for exact displayed
+OHLC and atomic-volume-derived amounts. Times are UTC.
+
+The collector verifies successful finalized direct swaps of this specific pool,
+the program/discriminator, vault identities, eight-decimal balance changes and
+signed input/minimum. Deposits, quotes, mining, failures and ambiguous multi-action
+transactions do not become trades. A local synced `trades.jsonl` cache retains
+captured trades after refresh/restart and RPC pruning, scoped to genesis and pool.
+This is a display cache, never consensus state or a price oracle. Cache corruption
+or RPC errors surface as chart errors and do not authorize or block asset issuance.
+
+The collector scans the latest 100 finalized pool transactions, up to 25 unseen
+transactions per refresh. Refresh again if a backlog is shown. It is not an
+archival indexer: transactions already pruned before capture and activity outside
+that bounded window may be missing. The chart labels this limitation, shows no
+synthetic candles for empty intervals, and displays the last 120 traded intervals
+and 20 recent trades. Sparse trading produces a sparse chart. No transaction is
+submitted just to populate the user's chart.
+
 ## Request identity and interrupted operations
 
 HTTP wrap, unwrap, pool seed and swap now require a request ID. The operation stores
