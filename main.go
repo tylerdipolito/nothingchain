@@ -45,6 +45,8 @@ func run(args []string) error {
 		return nil
 	}
 	switch args[0] {
+	case "simulate":
+		return runSimulation(args[1:])
 	case "amm":
 		return runAMM(args[1:])
 	case "wallet":

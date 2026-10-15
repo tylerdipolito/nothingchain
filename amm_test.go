@@ -137,3 +137,75 @@ func TestAMMArithmeticBounds(t *testing.T) {
 		t.Fatal("bad ceiling")
 	}
 }
+
+func TestAMMPendingReplayAndAtomicRejection(t *testing.T) {
+	bc := NewBlockchain()
+	w := testWallet(61)
+	mustMine(t, bc, w)
+	mustMine(t, bc, w)
+	applyOp(t, bc, w, ammOperation{Kind: "faucet"})
+	applyOp(t, bc, w, ammOperation{Kind: "add", A: 10 * UnitsPerGO, B: 1000 * UnitsPerGO, MinA: 1})
+	tx := ammTx(t, bc, w, ammOperation{Kind: "swap", Asset: "testUSD", A: 100 * UnitsPerGO, MinA: 1})
+	if err := bc.AddTx(tx); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := json.Marshal(bc.Snapshot())
+	if err := bc.AddTx(tx); err == nil {
+		t.Fatal("pending nonce replay accepted")
+	}
+	after, _ := json.Marshal(bc.Snapshot())
+	if string(before) != string(after) {
+		t.Fatal("rejection changed state")
+	}
+	mustMine(t, bc, w)
+	if err := bc.AddTx(tx); err == nil {
+		t.Fatal("confirmed nonce replay accepted")
+	}
+	for _, op := range []ammOperation{
+		{Kind: "swap", Asset: "GO", A: math.MaxInt64, MinA: 1},
+		{Kind: "swap", Asset: "testUSD", A: 1, MinA: 1},
+		{Kind: "remove", A: math.MaxInt64, MinA: 1, MinB: 1},
+		{Kind: "add", A: 1, B: 1, MinA: math.MaxInt64},
+	} {
+		before, _ = json.Marshal(bc.Snapshot())
+		if err := bc.AddTx(ammTx(t, bc, w, op)); err == nil {
+			t.Fatalf("bad op accepted: %+v", op)
+		}
+		after, _ = json.Marshal(bc.Snapshot())
+		if string(before) != string(after) {
+			t.Fatal("failed operation changed state")
+		}
+	}
+	checkConservation(t, bc)
+}
+
+func TestAMMForkReconcilesConfirmedPool(t *testing.T) {
+	a := NewBlockchain()
+	w := testWallet(62)
+	mustMine(t, a, w)
+	mustMine(t, a, w)
+	applyOp(t, a, w, ammOperation{Kind: "faucet"})
+	applyOp(t, a, w, ammOperation{Kind: "add", A: 10 * UnitsPerGO, B: 1000 * UnitsPerGO, MinA: 1})
+	b := NewBlockchain()
+	if ok, e := b.Adopt(a.Snapshot()); e != nil || !ok {
+		t.Fatalf("initial sync: %v", e)
+	}
+	applyOp(t, a, w, ammOperation{Kind: "swap", Asset: "testUSD", A: 100 * UnitsPerGO, MinA: 1})
+	mustMine(t, b, w)
+	mustMine(t, b, w)
+	if ok, e := a.Adopt(b.Snapshot()); e != nil || !ok {
+		t.Fatalf("fork adoption: %v", e)
+	}
+	ap, _ := a.ammSnapshot()
+	bp, _ := b.ammSnapshot()
+	x, _ := json.Marshal(ap)
+	y, _ := json.Marshal(bp)
+	if string(x) != string(y) {
+		t.Fatal("confirmed pools diverged after reorg")
+	}
+	checkConservation(t, a)
+	checkConservation(t, b)
+	// A valid orphan swap may be requeued; mining it must remain conservative.
+	mustMine(t, a, w)
+	checkConservation(t, a)
+}

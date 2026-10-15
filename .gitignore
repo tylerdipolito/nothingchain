@@ -14,3 +14,13 @@
 
 /gochain-amm-test.json
 /gochain-amm-test.json.lock
+
+/gochain-amm-peer.json
+/gochain-amm-peer.json.lock
+
+/reward-liquidity.local.json
+/reward-liquidity.local.json.lock
+/reward-liquidity.local.tmp
+__pycache__/
+
+/simulation-local/
