@@ -178,3 +178,11 @@ See [solana-devnet/README.md](solana-devnet/README.md) for the separate Rust/Anc
 AMM, wallet-connected swap and liquidity interface, local Solana verification,
 and pending public devnet funding step. It uses our own program, with no Orca
 engine or SDK dependency. These SPL test tokens are separate from mined GO.
+
+## Local GO → Solana bridge laboratory
+
+A separate trusted local bridge prototype now locks newly mined checkpoint-network
+GO, issues matching eight-decimal Solana wGO, and burns wGO to release GO. Its UI
+and separate wGO/testUSD pool run on port 5180. Existing Demo GO and old GoChain
+balances are not migrated. See [BRIDGE.md](BRIDGE.md) for startup, trust assumptions,
+recovery and verification. This is local test infrastructure, not a public bridge.

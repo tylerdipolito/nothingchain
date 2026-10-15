@@ -2,7 +2,9 @@
 
 This release is for local experimentation with GoChain and the independent
 Solana AMM. It does not establish public-network security, external asset
-backing, a dollar peg, a production audit or a GoChain/Solana bridge.
+backing, a dollar peg or a production audit. A separate trusted local bridge
+prototype is now available: see [BRIDGE.md](BRIDGE.md). It uses fresh checkpoint
+network wallets and a distinct wGO mint; it does not migrate these legacy balances.
 
 ## Run the Solana interface on this PC
 

@@ -266,3 +266,12 @@ scope. The server faucet and mint authority are local test conveniences.
 including bigint-buffer, toml, uuid and stream-json. Native bigint bindings are
 unavailable here and the package uses its JS fallback; that does not establish
 that the advisories are resolved. This is a local test prototype.
+
+## Separate trusted local GO bridge
+
+See [../BRIDGE.md](../BRIDGE.md) for the new local bridge UI on port 5180 and
+its separate eight-decimal wGO/testUSD pool. This page's original six-decimal
+Demo GO pool remains unrelated to mined GO. The bridge uses dedicated server-held
+test wallets on a separate checkpoint GoChain ledger, not an extension wallet or
+public network. `npm run bridge -- status`, `npm run bridge:ui` and
+`npm run verify:bridge -- --isolated` are documented there.

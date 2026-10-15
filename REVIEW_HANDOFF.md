@@ -6,6 +6,17 @@ Original baseline: abd9a86af75162e3dd3efc1e70d114e67261c576
 
 ## October 15 review follow-up
 
+- Added a separate **trusted local** GO/Solana bridge prototype, with server-held
+  dedicated wallets, eight-decimal wGO, lock/mint and finalized burn/release,
+  synced signed intents, pending-operation exclusion, backing checks and recorded
+  source/release anchors. Start `scripts/Start-GoBridge.ps1`; read `BRIDGE.md` before
+  reviewing its trust and pruning assumptions. No public bridge, old-balance
+  migration, external deposit watcher or extension-wallet bridge is claimed.
+- `solana-devnet/scripts/verify-bridge.ts --isolated` exercises real lock/mint,
+  lost-acknowledgement recovery, a separate pool/swap, burn/release and a changed
+  anchor fixture. Core and engine unit tests cover precision, signing, durable
+  recovery, failed/expired submissions, liabilities and pruning/rollback handling.
+
 - Closed the faucet request-body race and added exclusive, synced per-wallet
   claim files. A real isolated process test stopped the server after durable
   claim creation/before funding, removed its summary entry, restarted and proved

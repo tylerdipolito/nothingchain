@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>GO Bridge · Local laboratory</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: system-ui, sans-serif;
+        color: #eaf0f4;
+        background: #0c141b;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0 auto;
+        max-width: 1200px;
+        padding: 32px 24px;
+      }
+      h1 {
+        font-size: 42px;
+        letter-spacing: -2px;
+        margin: 8px 0;
+      }
+      h2 {
+        font-size: 19px;
+      }
+      p {
+        line-height: 1.6;
+        color: #abbac5;
+      }
+      .badge {
+        color: #aaf2cc;
+        font-size: 12px;
+        letter-spacing: 2px;
+      }
+      header {
+        border-bottom: 1px solid #30414b;
+        padding-bottom: 24px;
+      }
+      .notice {
+        border-left: 3px solid #e9ba70;
+        padding: 4px 18px;
+        background: #1a2023;
+        margin: 24px 0;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 16px;
+      }
+      .card {
+        background: #131f29;
+        border: 1px solid #30414b;
+        border-radius: 14px;
+        padding: 22px;
+      }
+      .value {
+        font-size: 27px;
+        font-variant-numeric: tabular-nums;
+        color: #aaf2cc;
+        word-break: break-word;
+      }
+      .muted {
+        font-size: 13px;
+        color: #a1b3bf;
+      }
+      input,
+      select,
+      button {
+        border: 1px solid #415966;
+        border-radius: 8px;
+        padding: 12px;
+        background: #0c141b;
+        color: #eaf0f4;
+        font: inherit;
+        max-width: 100%;
+      }
+      input {
+        width: 100%;
+        margin: 8px 0 12px;
+      }
+      button {
+        background: #aaf2cc;
+        color: #10271f;
+        cursor: pointer;
+        font-weight: 600;
+        margin: 6px 4px 0 0;
+      }
+      button:disabled {
+        opacity: 0.4;
+        cursor: wait;
+      }
+      label {
+        display: block;
+        font-size: 13px;
+        color: #bac8d0;
+      }
+      #message {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        color: #e9ba70;
+        min-height: 30px;
+        margin: 20px 0;
+      }
+      pre {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        font-size: 12px;
+        line-height: 1.6;
+        color: #aebfc9;
+      }
+      details {
+        margin-top: 24px;
+      }
+      .actions {
+        margin-top: 20px;
+      }
+      .caption {
+        font-size: 14px;
+      }
+      .pool {
+        margin: 20px 0;
+      }
+      a {
+        color: #aaf2cc;
+      }
+      @media (max-width: 800px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+        h1 {
+          font-size: 34px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <span class="badge">LOCAL LABORATORY / TRUSTED OPERATOR</span>
+      <h1>Mined GO. Wrapped on Solana.</h1>
+      <p>
+        Lock GO on the checkpoint test chain, mint matching wGO, and trade in a
+        separate pool. Burn wGO to return GO.
+      </p>
+    </header>
+    <div class="notice">
+      <p>
+        Test assets only. This page uses dedicated server-held test wallets, not
+        Phantom or your existing wallets. The operator holds the GO custody and
+        wGO mint keys. wGO is separate from Demo GO; testUSD is unbacked. This
+        is not a trustless or production bridge.
+      </p>
+    </div>
+    <div class="grid">
+      <section class="card">
+        <label>MINED GO · YOUR BRIDGE WALLET</label>
+        <p class="value" id="go">—</p>
+        <button data-action="mine" data-args='["3"]'>Mine 3 test blocks</button>
+        <p class="caption">
+          Manual test mining. No block timer or issuance policy was changed.
+        </p>
+      </section>
+      <section class="card">
+        <label>SOLANA wGO · YOUR BRIDGE WALLET</label>
+        <p class="value" id="wgo">—</p>
+        <p class="caption">
+          One wGO represents one GO in custody. Eight decimals on both sides.
+        </p>
+      </section>
+      <section class="card">
+        <label>BACKING CHECK</label>
+        <p class="value" id="backing">Checking…</p>
+        <p class="caption" id="backingDetail"></p>
+      </section>
+    </div>
+    <div id="message" role="status" aria-live="polite"></div>
+    <div class="grid">
+      <section class="card">
+        <h2>1. GO → wGO</h2>
+        <label for="wrapAmount">GO to deposit</label
+        ><input id="wrapAmount" value="10" inputmode="decimal" /><button
+          id="wrap"
+        >
+          Lock GO
+        </button>
+        <p class="caption">
+          After submitting, mine three blocks and recover. The same signed
+          deposit cannot mint twice.
+        </p>
+      </section>
+      <section class="card">
+        <h2>2. wGO → GO</h2>
+        <label for="unwrapAmount">wGO to burn</label
+        ><input id="unwrapAmount" value="1" inputmode="decimal" /><button
+          id="unwrap"
+        >
+          Burn & request GO
+        </button>
+        <p class="caption">
+          Waits for Solana finality before queuing the release. Mine three
+          GoChain blocks to finish.
+        </p>
+      </section>
+      <section class="card">
+        <h2>Recovery</h2>
+        <p class="caption">
+          Unfinished operations block another trade. Recovery checks existing
+          signed transactions; it never signs a second payment.
+        </p>
+        <button data-action="recover" data-args="[]">
+          Recover pending operation</button
+        ><button id="refresh">Refresh balances</button>
+      </section>
+    </div>
+    <section class="card pool">
+      <h2>wGO / testUSD · independent AMM</h2>
+      <p class="value" id="reserves">Not seeded</p>
+      <p class="muted" id="poolAddress"></p>
+      <p class="caption">
+        Fixed 0.30% input fee. Liquidity comes from this wallet’s backed wGO and
+        a separate eight-decimal testUSD mint.
+      </p>
+      <div class="grid">
+        <div>
+          <label for="seedGO">Initial wGO</label
+          ><input id="seedGO" value="5" /><label for="seedUSD"
+            >Initial testUSD</label
+          ><input id="seedUSD" value="500" /><button id="seed">
+            Seed this pool once
+          </button>
+        </div>
+        <div>
+          <label for="asset">Pay with</label
+          ><select id="asset">
+            <option>testUSD</option>
+            <option>wGO</option></select
+          ><label for="swapAmount">Input amount</label
+          ><input id="swapAmount" value="10" /><button id="quote">
+            Get quote
+          </button>
+          <p id="quoteText" class="caption">Get a quote before swapping.</p>
+        </div>
+        <div>
+          <label for="minimum">Minimum output</label
+          ><input id="minimum" placeholder="Get a fresh quote" /><button
+            id="swap"
+          >
+            Confirm swap
+          </button>
+          <p class="caption">
+            Quotes suggest a 1% slippage limit. Inspect the minimum before
+            confirming. A swap can fail if reserves move.
+          </p>
+          <p class="caption" id="usdBalance"></p>
+        </div>
+      </div>
+    </section>
+    <details>
+      <summary>Network identities, addresses and operation receipts</summary>
+      <pre id="details"></pre>
+    </details>
+    <div
+      id="review"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="reviewTitle"
+      hidden
+      style="
+        position: fixed;
+        inset: 0;
+        background: #081017ee;
+        padding: 15vh 24px;
+        z-index: 10;
+      "
+    >
+      <section class="card" style="max-width: 500px; margin: auto">
+        <h2 id="reviewTitle">Review local test transaction</h2>
+        <p id="reviewText"></p>
+        <p>Uses only the dedicated server-held test wallet.</p>
+        <button id="approve">Submit local test transaction</button
+        ><button id="cancel">Cancel</button>
+      </section>
+    </div>
+    <script nonce="__TOKEN__">
+      const token = "__TOKEN__";
+      const el = (id) => document.getElementById(id);
+      let busy = false,
+        pending = false,
+        seeded = false;
+      const controls = () => {
+        document.querySelectorAll("button").forEach((b) => {
+          b.disabled =
+            busy ||
+            (pending && ["wrap", "unwrap", "swap", "seed"].includes(b.id)) ||
+            (seeded && b.id === "seed");
+        });
+      };
+      async function request(command, args = []) {
+        const response = await fetch("/api", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Bridge-Token": token,
+          },
+          body: JSON.stringify({ command, args }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw Error(result.error || "Request failed");
+        return result;
+      }
+      function render(s) {
+        el("go").textContent = s.user.GO + " GO";
+        el("wgo").textContent = s.user.wGO + " wGO";
+        el("usdBalance").textContent = "Wallet: " + s.user.testUSD + " testUSD";
+        el("backing").textContent = "Covered";
+        const b = s.backing;
+        el("backingDetail").textContent =
+          "Custody " +
+          b.custody_atoms +
+          " atoms · supply " +
+          b.supply_atoms +
+          " atoms · pending withdrawals " +
+          b.pending_withdrawal_atoms +
+          " atoms";
+        el("details").textContent = JSON.stringify(s, null, 2);
+        pending = s.operations.some((o) => !o.done);
+        seeded = !!s.pool;
+        el("reserves").textContent = s.pool
+          ? s.pool.wGO + " wGO / " + s.pool.testUSD + " testUSD"
+          : "Not seeded";
+        el("poolAddress").textContent = s.pool ? s.pool.address : "";
+        controls();
+      }
+      async function act(command, args = []) {
+        if (busy) return;
+        busy = true;
+        controls();
+        el("message").textContent =
+          command === "status"
+            ? "Checking networks…"
+            : "Working… Solana finality can take several seconds. Do not submit twice.";
+        try {
+          const result = await request(command, args);
+          if (command === "quote") {
+            el("minimum").value = result.minimum;
+            el("quoteText").textContent =
+              result.output +
+              " " +
+              result.output_asset +
+              " expected · fee 0.30%";
+            el("message").textContent = "Quote only; no assets moved.";
+          } else {
+            render(result);
+            el("message").textContent = pending
+              ? "Operation saved. Mine three GoChain blocks, then recover if needed."
+              : "Confirmed. Backing check passed.";
+          }
+        } catch (e) {
+          el("message").textContent =
+            e.message + "\nInspect recovery before repeating an action.";
+          el("backing").textContent = "Check required";
+        } finally {
+          busy = false;
+          controls();
+        }
+      }
+      document
+        .querySelectorAll("[data-action]")
+        .forEach(
+          (b) =>
+            (b.onclick = () =>
+              act(b.dataset.action, JSON.parse(b.dataset.args))),
+        );
+      let reviewed = null;
+      function review(command, args, description) {
+        reviewed = { command, args };
+        el("reviewText").textContent = description;
+        el("review").hidden = false;
+        el("approve").focus();
+      }
+      el("cancel").onclick = () => {
+        reviewed = null;
+        el("review").hidden = true;
+      };
+      el("approve").onclick = () => {
+        const action = reviewed;
+        reviewed = null;
+        el("review").hidden = true;
+        if (action) act(action.command, action.args);
+      };
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") el("cancel").click();
+      });
+      el("wrap").onclick = () =>
+        review(
+          "wrap",
+          [el("wrapAmount").value],
+          "Lock " +
+            el("wrapAmount").value +
+            " GO from the dedicated test wallet.",
+        );
+      el("unwrap").onclick = () =>
+        review(
+          "unwrap",
+          [el("unwrapAmount").value],
+          "Burn " +
+            el("unwrapAmount").value +
+            " wGO and release GO to the dedicated test wallet.",
+        );
+      el("seed").onclick = () =>
+        review(
+          "seed-pool",
+          [el("seedGO").value, el("seedUSD").value],
+          "Deposit " +
+            el("seedGO").value +
+            " wGO and " +
+            el("seedUSD").value +
+            " testUSD as liquidity.",
+        );
+      el("quote").onclick = () =>
+        act("quote", [el("asset").value, el("swapAmount").value]);
+      el("swap").onclick = () =>
+        review(
+          "swap",
+          [el("asset").value, el("swapAmount").value, el("minimum").value],
+          "Swap " +
+            el("swapAmount").value +
+            " " +
+            el("asset").value +
+            " with minimum output " +
+            el("minimum").value +
+            ".",
+        );
+      for (const id of ["asset", "swapAmount"])
+        el(id).oninput = () => {
+          el("minimum").value = "";
+          el("quoteText").textContent = "Inputs changed. Get a fresh quote.";
+        };
+      el("refresh").onclick = () => act("status");
+      act("status");
+    </script>
+  </body>
+</html>
