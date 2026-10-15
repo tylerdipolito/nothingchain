@@ -70,6 +70,8 @@ type Block struct {
 	Miner     string        `json:"miner"`
 	Reward    int64         `json:"reward_atoms"`
 	Hash      string        `json:"hash"`
+	Bits      uint32        `json:"bits,omitempty"`
+	AuxPoW    *AuxPoW       `json:"auxpow,omitempty"`
 }
 
 func (b *Block) computeHash() string {

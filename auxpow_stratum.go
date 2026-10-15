@@ -79,18 +79,19 @@ type AuxPoWStratumServer struct {
 	ShareDiff      float64 // Difficulty for Bitaxe shares (e.g. 1.0, 16.0, 64.0)
 	GoTargetBits   uint32  // Target bits for GoChain block adoption
 
-	mu             sync.RWMutex
-	currentJob     *StratumJob
-	jobHistory     map[string]*StratumJob
-	jobCounter     uint64
-	sessionCounter uint64
-	sessions       map[uint64]*StratumSession
+	mu              sync.RWMutex
+	currentJob      *StratumJob
+	jobHistory      map[string]*StratumJob
+	submittedShares map[string]bool
+	jobCounter      uint64
+	sessionCounter  uint64
+	sessions        map[uint64]*StratumSession
 
 	AcceptedShares uint64
 	RejectedShares uint64
 	MinedBlocks    uint64
 
-	OnBlockMined   func(auxBlock *AuxBlock)
+	OnBlockMined func(auxBlock *AuxBlock)
 }
 
 func NewAuxPoWStratumServer(addr, nodeURL, defaultMiner string, shareDiff float64, goBits uint32) *AuxPoWStratumServer {
@@ -101,13 +102,14 @@ func NewAuxPoWStratumServer(addr, nodeURL, defaultMiner string, shareDiff float6
 		goBits = DefaultGoAuxBits
 	}
 	return &AuxPoWStratumServer{
-		ListenAddr:     addr,
-		GoChainNodeURL: nodeURL,
-		DefaultMiner:   defaultMiner,
-		ShareDiff:      shareDiff,
-		GoTargetBits:   goBits,
-		jobHistory:     make(map[string]*StratumJob),
-		sessions:       make(map[uint64]*StratumSession),
+		ListenAddr:      addr,
+		GoChainNodeURL:  nodeURL,
+		DefaultMiner:    defaultMiner,
+		ShareDiff:       shareDiff,
+		GoTargetBits:    goBits,
+		jobHistory:      make(map[string]*StratumJob),
+		submittedShares: make(map[string]bool),
+		sessions:        make(map[uint64]*StratumSession),
 	}
 }
 
@@ -435,6 +437,26 @@ func (s *AuxPoWStratumServer) handleSubmit(session *StratumSession, req *Stratum
 		return
 	}
 
+	// Reject duplicate share
+	shareKey := fmt.Sprintf("%s:%s:%s:%s", jobID, session.Extranonce1, extranonce2Hex, nonceHex)
+	s.mu.Lock()
+	if s.submittedShares[shareKey] {
+		s.mu.Unlock()
+		atomic.AddUint64(&s.RejectedShares, 1)
+		_ = session.Enc.Encode(StratumRPCResponse{ID: req.ID, Result: false, Error: []any{22, "Duplicate share", nil}})
+		return
+	}
+	s.submittedShares[shareKey] = true
+	if len(s.submittedShares) > 10000 {
+		for k := range s.submittedShares {
+			delete(s.submittedShares, k)
+			if len(s.submittedShares) <= 5000 {
+				break
+			}
+		}
+	}
+	s.mu.Unlock()
+
 	coinbase := append([]byte{}, job.Coinb1...)
 	coinbase = append(coinbase, extranonce1Bytes...)
 	coinbase = append(coinbase, extranonce2Bytes...)
@@ -509,6 +531,8 @@ func (s *AuxPoWStratumServer) handleSubmit(session *StratumSession, req *Stratum
 			minerAddr = parts[0]
 		}
 		job.CandidateBlock.Miner = minerAddr
+		job.CandidateBlock.Bits = job.GoTargetBits
+		job.CandidateBlock.AuxPoW = auxpow
 
 		auxBlock := &AuxBlock{
 			Block:  job.CandidateBlock,
@@ -546,7 +570,7 @@ func (s *AuxPoWStratumServer) submitBlockToNode(auxBlock *AuxBlock) {
 	if err != nil {
 		return
 	}
-	resp, err := http.Post(s.GoChainNodeURL+"/peer/block", "application/json", bytes.NewReader(payload))
+	resp, err := http.Post(strings.TrimRight(s.GoChainNodeURL, "/")+"/block", "application/json", bytes.NewReader(payload))
 	if err != nil {
 		log.Printf("[STRATUM] Failed to broadcast block to GoChain node: %v", err)
 		return

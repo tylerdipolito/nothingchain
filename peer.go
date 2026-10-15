@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -27,9 +28,28 @@ func (bc *Blockchain) Snapshot() chainState {
 	return s
 }
 
-// Every block has the same required work in this experiment. Prefer more blocks;
-// break equal-work ties by the lexicographically smaller tip hash so peers converge.
+func chainWork(blocks []*Block) *big.Int {
+	total := big.NewInt(0)
+	for _, b := range blocks {
+		if b == nil {
+			continue
+		}
+		bits := b.Bits
+		if bits == 0 {
+			bits = DefaultGoAuxBits
+		}
+		total.Add(total, TargetToWork(BitsToTarget(bits)))
+	}
+	return total
+}
+
 func betterChain(candidate, current []*Block) bool {
+	wCandidate := chainWork(candidate)
+	wCurrent := chainWork(current)
+	cmp := wCandidate.Cmp(wCurrent)
+	if cmp != 0 {
+		return cmp > 0
+	}
 	if len(candidate) != len(current) {
 		return len(candidate) > len(current)
 	}

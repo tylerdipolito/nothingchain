@@ -92,8 +92,21 @@ func validateStateAt(s chainState, includePending bool, now int64) (*ledger, err
 		if b.Index != i || b.Nonce < 0 || b.Timestamp > now+MaxFutureSeconds {
 			return nil, fmt.Errorf("block %d: invalid index or nonce", i)
 		}
-		if b.Hash != b.computeHash() || !strings.HasPrefix(b.Hash, strings.Repeat("0", Difficulty)) {
-			return nil, fmt.Errorf("block %d: invalid hash or proof of work", i)
+		if b.AuxPoW != nil {
+			if b.Hash != b.computeHash() {
+				return nil, fmt.Errorf("block %d: invalid aux block hash", i)
+			}
+			bits := b.Bits
+			if bits == 0 {
+				bits = DefaultGoAuxBits
+			}
+			if err := ValidateAuxPoW(b, b.AuxPoW, bits); err != nil {
+				return nil, fmt.Errorf("block %d: invalid auxpow proof: %w", i, err)
+			}
+		} else {
+			if b.Hash != b.computeHash() || !strings.HasPrefix(b.Hash, strings.Repeat("0", Difficulty)) {
+				return nil, fmt.Errorf("block %d: invalid hash or proof of work", i)
+			}
 		}
 		if i == 0 {
 			if b.Hash != expectedGenesisHash() {
@@ -193,7 +206,17 @@ func (bc *Blockchain) persist(s chainState) error {
 func copyState(s chainState) chainState {
 	return chainState{ChainID: s.ChainID, Blocks: append([]*Block{}, s.Blocks...), Pending: append([]Transaction{}, s.Pending...)}
 }
-func cloneBlock(b *Block) *Block { c := *b; c.Txs = append([]Transaction{}, b.Txs...); return &c }
+func cloneBlock(b *Block) *Block {
+	c := *b
+	c.Txs = append([]Transaction{}, b.Txs...)
+	if b.AuxPoW != nil {
+		auxCopy := *b.AuxPoW
+		auxCopy.CoinbaseBranch = append([]string{}, b.AuxPoW.CoinbaseBranch...)
+		auxCopy.ChainMerkleBranch = append([]string{}, b.AuxPoW.ChainMerkleBranch...)
+		c.AuxPoW = &auxCopy
+	}
+	return &c
+}
 func (bc *Blockchain) Blocks() []*Block {
 	bc.mu.RLock()
 	defer bc.mu.RUnlock()

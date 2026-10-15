@@ -403,6 +403,26 @@ func newHandlerMonitored(bc *Blockchain, defaultMiner string, auto bool, interva
 		}
 		writeJSON(w, b)
 	})
+	mux.HandleFunc("POST /block", func(w http.ResponseWriter, r *http.Request) {
+		var b Block
+		if err := decodeBody(w, r, &b); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		snapshot := bc.Snapshot()
+		candidate := copyState(snapshot)
+		candidate.Blocks = append(candidate.Blocks, &b)
+		adopted, err := bc.Adopt(candidate)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("block rejected: %v", err), 400)
+			return
+		}
+		if !adopted {
+			http.Error(w, "block did not extend active chain", 409)
+			return
+		}
+		writeJSON(w, map[string]any{"status": "adopted", "index": b.Index, "hash": b.Hash})
+	})
 	return mux
 }
 func serve(ctx context.Context, bc *Blockchain, addr, miner string, auto bool, interval time.Duration, pm *PeerManager) error {
