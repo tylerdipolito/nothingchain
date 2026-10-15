@@ -51,6 +51,8 @@ func run(args []string) error {
 		return runSimulation(args[1:])
 	case "amm":
 		return runAMM(args[1:])
+	case "stratum":
+		return runStratum(args[1:])
 	case "wallet":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: gochain wallet create|address [--file PATH]")
@@ -444,6 +446,7 @@ func usage() {
   gochain serve --port 8080 --mine --interval 1m [--data PATH] [--peers URL,...]
   gochain mine [--miner ADDRESS] [--offline]
   gochain send --to ADDRESS --amount 1 [--wallet PATH] [--memo TEXT]
+  gochain stratum --port 3333 [--diff 16] [--node http://127.0.0.1:8086]
   gochain balance ADDRESS
   gochain stats | chain | validate
 
