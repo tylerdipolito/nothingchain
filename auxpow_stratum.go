@@ -86,6 +86,8 @@ type AuxPoWStratumServer struct {
 	jobCounter      uint64
 	sessionCounter  uint64
 	sessions        map[uint64]*StratumSession
+	shareHistory    []shareRecord
+	minedBlocks     []minedBlockSummary
 
 	AcceptedShares uint64
 	RejectedShares uint64
@@ -510,6 +512,7 @@ func (s *AuxPoWStratumServer) handleSubmit(session *StratumSession, req *Stratum
 
 	// Share Accepted!
 	atomic.AddUint64(&s.AcceptedShares, 1)
+	s.recordShare(session.Difficulty)
 	_ = session.Enc.Encode(StratumRPCResponse{ID: req.ID, Result: true, Error: nil})
 	log.Printf("[STRATUM] ✅ Share Accepted from %s! Parent Hash: %s", session.Worker, parentHashHex)
 
@@ -553,6 +556,8 @@ func (s *AuxPoWStratumServer) handleSubmit(session *StratumSession, req *Stratum
 		log.Printf("[AUXPOW] Reward: %d atoms (~10 GO) -> %s", auxBlock.Reward, auxBlock.Miner)
 		log.Printf(strings.Repeat("=", 64) + "\n")
 
+		s.recordMinedBlock(auxBlock, btcHeader.Nonce, parentHashHex)
+
 		if s.OnBlockMined != nil {
 			s.OnBlockMined(auxBlock)
 		}
@@ -589,6 +594,7 @@ func runStratum(args []string) error {
 	wallet := fs.String("wallet", WalletFile, "wallet file")
 	diff := fs.Float64("diff", 16.0, "Stratum share difficulty for Bitaxe")
 	bits := fs.Uint("bits", uint(DefaultGoAuxBits), "GoChain block target bits")
+	dash := fs.Int("dash", 3334, "Web dashboard HTTP port")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -608,6 +614,14 @@ func runStratum(args []string) error {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	// Launch real-time web dashboard
+	dashAddr := fmt.Sprintf("%s:%d", *host, *dash)
+	go func() {
+		if err := srv.StartDashboard(dashAddr); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("[DASHBOARD] Dashboard server error: %v", err)
+		}
+	}()
 
 	// Periodic poller for GoChain node block updates
 	go func() {
