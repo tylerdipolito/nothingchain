@@ -45,6 +45,8 @@ func run(args []string) error {
 		return nil
 	}
 	switch args[0] {
+	case "checkpoint":
+		return runCheckpoint(args[1:])
 	case "simulate":
 		return runSimulation(args[1:])
 	case "amm":
@@ -82,11 +84,23 @@ func run(args []string) error {
 		wallet := fs.String("wallet", WalletFile, "local wallet file")
 		data := fs.String("data", ChainFile, "ledger path")
 		peers := fs.String("peers", "", "comma-separated loopback peer URLs")
+		checkpointFile := fs.String("checkpoint", "", "trusted signed checkpoint file (checkpoint build only)")
+		authority := fs.String("authority", "", "trusted checkpoint authority public key, from operator")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
 		if *interval < time.Second {
 			return fmt.Errorf("mining interval must be at least 1s")
+		}
+		var checkpoint *Checkpoint
+		if CheckpointRequired {
+			var err error
+			checkpoint, err = loadCheckpoint(*checkpointFile, *authority)
+			if err != nil {
+				return err
+			}
+		} else if *checkpointFile != "" || *authority != "" {
+			return fmt.Errorf("use the separate -tags checkpoint build for trusted checkpoints")
 		}
 		if *miner == "" {
 			w, err := LoadWallet(*wallet)
@@ -108,6 +122,10 @@ func run(args []string) error {
 		defer release()
 		bc, err := LoadOrCreate(*data)
 		if err != nil {
+			return err
+		}
+		bc.checkpoint = checkpoint
+		if err := bc.checkCheckpoint(bc.state, true); err != nil {
 			return err
 		}
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -139,6 +157,9 @@ func run(args []string) error {
 				return err
 			}
 			return printJSON(b)
+		}
+		if CheckpointRequired {
+			return fmt.Errorf("offline mining disabled in checkpoint build; use the node enforcing the trusted checkpoint")
 		}
 		release, err := acquireChainLock(ChainFile)
 		if err != nil {
@@ -201,13 +222,31 @@ func run(args []string) error {
 		}
 		return printJSON(result)
 	case "validate":
-		if _, err := os.Stat(ChainFile); err != nil {
+		fs := flags("validate")
+		data := fs.String("data", ChainFile, "ledger path")
+		checkpointFile := fs.String("checkpoint", "", "trusted signed checkpoint file")
+		authority := fs.String("authority", "", "trusted authority public key")
+		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
-		bc, err := LoadOrCreate(ChainFile)
+		var checkpoint *Checkpoint
+		if CheckpointRequired {
+			var err error
+			checkpoint, err = loadCheckpoint(*checkpointFile, *authority)
+			if err != nil {
+				return err
+			}
+		} else if *checkpointFile != "" || *authority != "" {
+			return fmt.Errorf("use the checkpoint build")
+		}
+		if _, err := os.Stat(*data); err != nil {
+			return err
+		}
+		bc, err := LoadOrCreate(*data)
 		if err != nil {
 			return err
 		}
+		bc.checkpoint = checkpoint
 		if err := bc.Validate(); err != nil {
 			return err
 		}

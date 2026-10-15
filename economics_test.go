@@ -103,3 +103,35 @@ func TestFailedApplyDoesNotCorruptLedger(t *testing.T) {
 		t.Fatal("failed tx modified ledger")
 	}
 }
+
+// Characterization of a legacy consensus limitation, not a security guarantee.
+// A calendar cutoff cannot establish elapsed real time from miner timestamps.
+func TestLegacyCalendarRewardTimestampGrinding(t *testing.T) {
+	w := testWallet(34)
+	cutoff := utc("2028-02-29T00:00:00Z")
+	makeHistory := func(timestamps ...int64) chainState {
+		s := NewBlockchain().Snapshot()
+		for _, timestamp := range timestamps {
+			b := NewBlock(len(s.Blocks), s.Blocks[len(s.Blocks)-1].Hash, nil, w.Address)
+			b.Timestamp = timestamp
+			b.Reward = rewardAt(timestamp)
+			b.Mine(Difficulty)
+			s.Blocks = append(s.Blocks, b)
+		}
+		return s
+	}
+	honest := makeHistory(cutoff-1, cutoff)
+	backdated := makeHistory(cutoff-1, cutoff-1, cutoff-1)
+	h, err := validateStateAt(honest, false, cutoff+3600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := validateStateAt(backdated, false, cutoff+3600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !betterChain(backdated.Blocks, honest.Blocks) || h.supply != 15*UnitsPerGO || b.supply != 30*UnitsPerGO {
+		t.Fatal("legacy timestamp reproduction no longer matches consensus; reassess characterization")
+	}
+	t.Log("legacy fork choice prefers backdated 30 GO history over honest 15 GO history at the same validation time")
+}

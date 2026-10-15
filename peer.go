@@ -43,6 +43,9 @@ func (bc *Blockchain) Adopt(remote chainState) (bool, error) {
 	if _, err := validateState(remote, false); err != nil {
 		return false, fmt.Errorf("reject peer chain: %w", err)
 	}
+	if err := bc.checkCheckpoint(remote, true); err != nil {
+		return false, err
+	}
 	// Take ownership of all candidate data before publication.
 	candidate := copyState(remote)
 	for i, b := range candidate.Blocks {
@@ -77,6 +80,9 @@ func (bc *Blockchain) Adopt(remote chainState) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	// Pending operations execute in the next block, just as in AddTx. Using
+	// the confirmed tip height here can resurrect expired AMM transactions.
+	l.height = int64(len(s.Blocks))
 	s.Pending = []Transaction{}
 	// Retry nonce-dependent entries after predecessors; ignore invalid or already
 	// confirmed transactions. apply must leave the ledger unchanged on failure.
@@ -110,6 +116,9 @@ func (bc *Blockchain) Adopt(remote chainState) (bool, error) {
 	}
 	if !changed {
 		return false, nil
+	}
+	if err := bc.checkCheckpoint(s, true); err != nil {
+		return false, err
 	}
 	if err := bc.persist(s); err != nil {
 		return false, fmt.Errorf("save peer state: %w", err)

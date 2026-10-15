@@ -20,6 +20,28 @@ class DepositPlanTests(unittest.TestCase):
 
 
 class JournalSafetyTests(unittest.TestCase):
+    def test_different_journals_cannot_run_concurrently_for_same_wallet(self):
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from reward_liquidity import run, acquire_wallet_lock
+        with tempfile.TemporaryDirectory() as tmp, patch('reward_liquidity.tempfile.gettempdir', return_value=tmp):
+            held = acquire_wallet_lock('same-wallet')
+            try:
+                for journal in ['first.json', 'second.json']:
+                    args = SimpleNamespace(node='http://127.0.0.1:8082', state=str(Path(tmp)/journal), binary='unused', wallet='unused')
+                    response = SimpleNamespace(returncode=0, stdout='{"address":"same-wallet"}', stderr='')
+                    with patch('reward_liquidity.subprocess.run', return_value=response), patch('reward_liquidity.urllib.request.urlopen', side_effect=AssertionError('No network before wallet lock')):
+                        with self.assertRaises(FileExistsError): run(args)
+                    self.assertTrue(held.exists(), 'contender must not remove owner lock')
+                    self.assertFalse(Path(args.state+'.lock').exists())
+                unrelated = acquire_wallet_lock('different-wallet')
+                unrelated.unlink()
+            finally:
+                held.unlink()
+            resumed = acquire_wallet_lock('same-wallet')
+            resumed.unlink()
     def test_completed_run_never_submits_again(self):
         self.check_journal('completed', False)
     def test_ambiguous_submission_never_retries(self):

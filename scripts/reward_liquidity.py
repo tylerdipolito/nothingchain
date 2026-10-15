@@ -5,12 +5,28 @@ import os
 from pathlib import Path
 import subprocess
 import time
+import hashlib
+import tempfile
 import urllib.request
 from urllib.parse import urlparse
 from decimal import Decimal
 
 UNIT = 100_000_000
 NETWORK = 'gochain-amm-test-v1'
+
+def acquire_wallet_lock(address):
+    # All journals for this wallet/network share one lock on this machine.
+    # Other signing programs do not participate; this is not a nonce service.
+    directory = Path(tempfile.gettempdir()) / 'gochain-reward-helper-locks'
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    identity = hashlib.sha256((NETWORK+':'+address).encode()).hexdigest()
+    path = directory / (identity+'.lock')
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        os.write(fd, str(os.getpid()).encode('ascii'))
+    finally:
+        os.close(fd)
+    return path
 
 def atoms(value):
     n = Decimal(value) * UNIT
@@ -52,6 +68,7 @@ def run(args):
     lock = Path(str(state_path)+'.lock')
     fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     os.close(fd)
+    wallet_lock = None
     try:
         def api(endpoint):
             with urllib.request.urlopen(node+endpoint, timeout=10) as response:
@@ -62,6 +79,7 @@ def run(args):
                 raise RuntimeError(result.stderr.strip() or 'CLI failed')
             return json.loads(result.stdout)
         addr = cli('wallet', 'address', '--file', str(Path(args.wallet).resolve()))['address']
+        wallet_lock = acquire_wallet_lock(addr)
         config = {'node': node, 'address': addr, 'network': NETWORK, 'percent': args.percent,
                   'go_budget': atoms(args.go_budget), 'usd_budget': atoms(args.usd_budget), 'confirmations': args.confirmations}
         if state_path.exists():
@@ -123,7 +141,11 @@ def run(args):
             time.sleep(2)
         print('Time limit reached. Journal preserved; no additional submission. A queued deposit may still confirm.', flush=True)
     finally:
-        lock.unlink()
+        try:
+            if wallet_lock is not None:
+                wallet_lock.unlink()
+        finally:
+            lock.unlink()
 
 if __name__ == '__main__':
     p = argparse.ArgumentParser(description=__doc__)

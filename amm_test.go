@@ -209,3 +209,26 @@ func TestAMMForkReconcilesConfirmedPool(t *testing.T) {
 	mustMine(t, a, w)
 	checkConservation(t, a)
 }
+
+func TestAMMPeerRejectsExpiredPendingAtNextHeight(t *testing.T) {
+	w := testWallet(63)
+	bc := NewBlockchain()
+	mustMine(t, bc, w)
+	// A deadline equal to the tip is valid in that block, but cannot be mined
+	// in the next one. Peer admission must agree with local AddTx admission.
+	tx := ammTx(t, bc, w, ammOperation{Kind: "faucet", Deadline: 1})
+	if err := bc.AddTx(tx); err == nil {
+		t.Fatal("local admission accepted expired transaction")
+	}
+	remote := bc.Snapshot()
+	remote.Pending = []Transaction{tx}
+	if _, err := bc.Adopt(remote); err != nil {
+		t.Fatal(err)
+	}
+	if bc.Stats().PendingTxs != 0 {
+		t.Fatal("peer admission retained transaction expired at next block height")
+	}
+	if _, err := validateState(bc.Snapshot(), true); err != nil {
+		t.Fatalf("peer synchronization published invalid pending state: %v", err)
+	}
+}

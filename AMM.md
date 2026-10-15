@@ -112,6 +112,13 @@ testUSD; it never claims faucet tokens or sells GO to fund the deposit. Shares
 must be at least 99% of the calculated quote. The maximum inputs are authorized
 limits; rounding can leave dust in the wallet. Two confirmations are not finality.
 
+The helper uses a machine-local wallet-address/network lock shared across
+journals, so separate helper runs cannot sign concurrently for the same wallet.
+Locks live in the user's temporary directory under `gochain-reward-helper-locks`
+and record the process ID. After a crash, verify that process has stopped before
+removing a stale wallet lock. Other signing programs do not honor this lock;
+it is not a global nonce allocator or a total budget across journals.
+
 The helper skips when funds are insufficient or transactions are pending. Keep
 other signing tools for this wallet idle during a run. A saved journal records
 the baseline, limits, proposal, signature and confirmation. Reusing the default

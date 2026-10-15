@@ -24,3 +24,6 @@
 __pycache__/
 
 /simulation-local/
+/.checkpoint-local/
+/gochain-checkpoint-test.json
+/gochain-checkpoint-test.json.lock

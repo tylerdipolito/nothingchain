@@ -163,6 +163,12 @@ The Windows race detector requires a compatible C compiler; normal builds do not
 
 See [AMM.md](AMM.md) for the separate GO/testUSD testnet, pool rules, build command, and CLI deposit/swap/withdraw workflow. The ordinary build and existing ledger remain on the original development network.
 
+An opt-in [trusted-checkpoint test network](CHECKPOINTS.md) preserves calendar
+halvings with signed operator anchors and fails closed at stale checkpoints or
+halving boundaries. It has a separate chain ID, ledger and default port; it does
+not migrate existing balances. Its authority is trusted, and fixed-difficulty
+public consensus remains experimental.
+
 ## Independent Solana AMM lab
 
 See [solana-devnet/README.md](solana-devnet/README.md) for the separate Rust/Anchor

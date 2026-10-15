@@ -18,9 +18,10 @@ type chainState struct {
 	Pending []Transaction `json:"pending"`
 }
 type Blockchain struct {
-	mu    sync.RWMutex
-	state chainState
-	path  string
+	checkpoint *Checkpoint
+	mu         sync.RWMutex
+	state      chainState
+	path       string
 }
 type ledger struct {
 	amm         *ammState
@@ -205,9 +206,15 @@ func (bc *Blockchain) Blocks() []*Block {
 func (bc *Blockchain) AddTx(tx Transaction) error {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
+	if err := bc.checkCheckpoint(bc.state, true); err != nil {
+		return err
+	}
 	s := copyState(bc.state)
 	s.Pending = append(s.Pending, tx)
 	if _, err := validateState(s, true); err != nil {
+		return err
+	}
+	if err := bc.checkCheckpoint(s, true); err != nil {
 		return err
 	}
 	if err := bc.persist(s); err != nil {
@@ -222,6 +229,9 @@ func (bc *Blockchain) MinePending(miner string) (*Block, error) {
 	}
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
+	if err := bc.checkCheckpoint(bc.state, true); err != nil {
+		return nil, err
+	}
 	if _, err := validateState(bc.state, true); err != nil {
 		return nil, err
 	}
@@ -230,11 +240,19 @@ func (bc *Blockchain) MinePending(miner string) (*Block, error) {
 	if b.Timestamp < s.Blocks[len(s.Blocks)-1].Timestamp {
 		b.Timestamp = s.Blocks[len(s.Blocks)-1].Timestamp
 	}
+	if bc.checkpoint != nil && b.Timestamp < bc.checkpoint.IssuedAt {
+		b.Timestamp = bc.checkpoint.IssuedAt
+	}
 	b.Reward = rewardAt(b.Timestamp)
 	b.Mine(Difficulty)
 	s.Blocks = append(s.Blocks, b)
 	s.Pending = []Transaction{}
 	if _, err := validateState(s, true); err != nil {
+		return nil, err
+	}
+	// Proof of work may cross an expiry or calendar boundary after its initial
+	// readiness check. Recheck before publishing the newly mined state.
+	if err := bc.checkCheckpoint(s, true); err != nil {
 		return nil, err
 	}
 	if err := bc.persist(s); err != nil {
@@ -246,6 +264,9 @@ func (bc *Blockchain) MinePending(miner string) (*Block, error) {
 func (bc *Blockchain) Validate() error {
 	bc.mu.RLock()
 	defer bc.mu.RUnlock()
+	if err := bc.checkCheckpoint(bc.state, false); err != nil {
+		return err
+	}
 	_, err := validateState(bc.state, true)
 	return err
 }
@@ -299,6 +320,10 @@ type Stats struct {
 	Difficulty           int    `json:"difficulty"`
 	Unit                 string `json:"unit"`
 	Valid                bool   `json:"valid"`
+	CheckpointRequired   bool   `json:"checkpoint_required"`
+	CheckpointHeight     int    `json:"checkpoint_height,omitempty"`
+	CheckpointIssuedAt   int64  `json:"checkpoint_issued_at,omitempty"`
+	CheckpointReady      bool   `json:"checkpoint_ready"`
 }
 
 func (bc *Blockchain) Stats() Stats {
@@ -313,6 +338,12 @@ func (bc *Blockchain) Stats() Stats {
 		s.TransferredGO = formatAmount(l.transferred)
 	}
 	_, pendingErr := validateState(bc.state, true)
-	s.Valid = err == nil && pendingErr == nil
+	s.CheckpointRequired = CheckpointRequired
+	s.CheckpointReady = bc.checkCheckpoint(bc.state, true) == nil
+	if bc.checkpoint != nil {
+		s.CheckpointHeight = bc.checkpoint.Height
+		s.CheckpointIssuedAt = bc.checkpoint.IssuedAt
+	}
+	s.Valid = err == nil && pendingErr == nil && bc.checkCheckpoint(bc.state, false) == nil
 	return s
 }
