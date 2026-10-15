@@ -4,7 +4,20 @@ Repository: https://github.com/tylerdipolito/nothingchain
 Branch: gochain-amm-review
 Original baseline: abd9a86af75162e3dd3efc1e70d114e67261c576
 
-## October 15 review follow-up (local working tree)
+## October 15 review follow-up
+
+- Closed the faucet request-body race and added exclusive, synced per-wallet
+  claim files. A real isolated process test stopped the server after durable
+  claim creation/before funding, removed its summary entry, restarted and proved
+  replay rejection with zero issuance. Run `npm run verify:faucet -- --isolated`.
+- Client transactions now save recovery receipts before broadcast, distinguish
+  cancellation/confirmed failure/uncertain outcome, and never automatically
+  rebroadcast after confirmation loss. Unresolved receipts block another trade
+  until historical status/expiry reconciliation. Unit tests cover those states;
+  browser tests verified cancellation, confirmed swap, and receipt reload.
+  The guard assumes one signing tab/tool per wallet, not global coordination.
+- Solana integration now requires explicit `--isolated`: run
+  `npm run verify -- --isolated` only against disposable local test state.
 
 - Solana UI now supports encrypted local-wallet downloads, optional encrypted
   browser storage, reload/unlock and file restoration. Browser QA on an isolated

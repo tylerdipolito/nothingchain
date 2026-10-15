@@ -7,6 +7,7 @@ import {
   TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
 import { context, Deployment, PROGRAM, assertNetwork, Wallet } from "./solana";
+import { submitTransaction, TransactionUpdate } from "./submit";
 export const UNIT = 1000000n;
 export function parseUnits(value: string): bigint {
   if (!/^(0|[1-9]\d*)(\.\d{1,6})?$/.test(value))
@@ -69,6 +70,7 @@ export interface DepositQuote {
   slot: number;
 }
 export class Market {
+  onTransaction: (event: TransactionUpdate) => void = () => {};
   connection: Connection;
   deployment: Deployment;
   wallet: Wallet;
@@ -217,7 +219,7 @@ export class Market {
   async swap(q: SwapQuote) {
     if ((await this.connection.getSlot("confirmed")) > q.slot + 150)
       throw Error("Quote expired. Get a new quote.");
-    return this.program.methods
+    const tx = await this.program.methods
       .swap(
         this.deployment.symbolA === q.symbol,
         new BN(q.input.toString()),
@@ -226,7 +228,13 @@ export class Market {
       )
       .accountsStrict(this.accounts())
       .preInstructions(this.atas())
-      .rpc();
+      .transaction();
+    return submitTransaction(
+      this.connection,
+      this.wallet,
+      tx,
+      this.onTransaction,
+    );
   }
   async quoteDeposit(amount: string): Promise<DepositQuote> {
     const input = parseUnits(amount);
@@ -248,7 +256,7 @@ export class Market {
     };
   }
   async deposit(q: DepositQuote) {
-    return this.program.methods
+    const tx = await this.program.methods
       .deposit(
         new BN(q.a.toString()),
         new BN(q.b.toString()),
@@ -257,7 +265,13 @@ export class Market {
       )
       .accountsStrict(this.liquidityAccounts())
       .preInstructions(this.atas(true))
-      .rpc();
+      .transaction();
+    return submitTransaction(
+      this.connection,
+      this.wallet,
+      tx,
+      this.onTransaction,
+    );
   }
   async quoteWithdraw(shares: string) {
     const n = parseUnits(shares),
@@ -275,7 +289,7 @@ export class Market {
     };
   }
   async withdraw(q: Awaited<ReturnType<Market["quoteWithdraw"]>>) {
-    return this.program.methods
+    const tx = await this.program.methods
       .withdraw(
         new BN(q.shares.toString()),
         new BN(q.minA.toString()),
@@ -284,6 +298,12 @@ export class Market {
       )
       .accountsStrict(this.liquidityAccounts())
       .preInstructions(this.atas(true))
-      .rpc();
+      .transaction();
+    return submitTransaction(
+      this.connection,
+      this.wallet,
+      tx,
+      this.onTransaction,
+    );
   }
 }

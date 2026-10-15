@@ -8,7 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "setup": "tsx scripts/setup.ts",
     "verify": "tsx scripts/verify.ts",
-    "test": "tsx --test src/*.test.ts",
+    "verify:faucet": "tsx scripts/verify-faucet-recovery.ts",
+    "test": "tsx --test src/*.test.ts scripts/*.test.ts",
     "keys": "tsx scripts/keys.ts",
     "setup:local": "tsx scripts/setup.ts --localnet",
     "idl": "tsx scripts/generate-idl.ts"

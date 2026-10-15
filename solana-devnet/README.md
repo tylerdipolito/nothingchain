@@ -30,6 +30,38 @@ its own keys/program ID; private keys are deliberately excluded from Git.
 
 ## Try the app
 
+### Transaction status and recovery
+
+Swaps and liquidity operations report preparing, wallet approval, pending and
+confirmed states. The app saves the signed transaction signature and blockhash
+expiry height before broadcasting. If browser storage is unavailable, it refuses
+to submit. Public receipts contain no private key or password and survive reload
+under the same wallet/network/origin. The activity list itself remains session-only.
+
+If submission or confirmation is interrupted, the outcome is **unconfirmed**, not
+automatically failed. The app does not automatically resend or re-sign, and blocks
+another trade until **Check transaction** finds confirmation, confirmed failure,
+or absence after blockhash expiry. It searches historical signature status and
+rechecks status after observing expiry. Reconnect the same wallet after reload
+to recover its receipt. Keep one signing tab/tool per wallet; this browser guard
+is not an atomic global nonce service across tabs or independent wallet programs.
+Do not clear browser storage while a transaction is unresolved. RPC correctness
+and availability remain trusted; confirmed Solana state is not irreversible finality.
+
+### Faucet durability
+
+The local faucet remains an unauthenticated test mint service, restricted to a
+loopback bind and exact Origin/Host. These headers are not authentication and
+new wallet addresses can request more test tokens. It must not be exposed publicly.
+
+Before funding, the server exclusively creates and syncs a per-wallet/network/
+genesis claim in `.local/faucet-claims/`. Claim existence blocks duplicate funding
+across processes and restarts, even if the summary journal is missing or a final
+log line is torn. Confirmed transaction signatures are appended and synced as
+funding progresses. Interrupted claims are never automatically retried. Inspect
+the claim and on-chain balances manually before any operator reconciliation;
+deleting claim files can re-enable issuance. Private keys remain server-only.
+
 ### Windows launcher (existing deployment)
 
 From the repository root:
@@ -195,8 +227,18 @@ and withdrawal claims, so the reserve ratio must not be used as a trusted oracle
 ```powershell
 npm test
 npm run build
-npm run verify
+npm run verify -- --isolated
+npm run verify:faucet -- --isolated
 ```
+
+These commands must target a fresh disposable local deployment. `verify:faucet`
+starts/stops its own server on port 5186, pauses it after a durable claim but
+before funding, removes only its generated test address from the summary,
+restarts, and proves the remaining claim prevents replay without issuing assets.
+It also overlaps successful funding requests, verifies exactly one issuance,
+then removes that test address's summary entry and proves the completed claim
+still blocks replay after another restart.
+It has no production fault-injection switch. Its reports stay in `.local/`.
 
 `verify` runs only on localnet and changes the local pool. It tests both swap
 directions, deposits/withdrawals, quote execution, fee/product behavior and

@@ -11,6 +11,10 @@ import {
 } from "@solana/spl-token";
 import { Market, formatUnits, outputFor, parseUnits } from "../src/market";
 import { Deployment, keyWallet, PROGRAM } from "../src/solana";
+if (!process.argv.includes("--isolated"))
+  throw Error(
+    "Use --isolated only with disposable local test state; this integration suite changes pool reserves and balances.",
+  );
 const d: Deployment = JSON.parse(
   await readFile("public/deployment.json", "utf8"),
 );

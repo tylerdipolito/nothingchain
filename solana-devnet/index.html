@@ -62,6 +62,19 @@
         </div>
       </section>
       <div id="error" class="error" role="alert" hidden></div>
+      <div
+        id="transactionStatus"
+        class="transaction-status"
+        role="status"
+        aria-live="polite"
+        hidden
+      >
+        <strong id="transactionState"></strong>
+        <a id="transactionLink" target="_blank" rel="noreferrer" hidden></a
+        ><button class="text-button" id="checkTransaction" hidden>
+          Check transaction
+        </button>
+      </div>
       <div class="workspace">
         <aside class="market-side">
           <div class="section-title">

@@ -1267,3 +1267,17 @@ dialog::backdrop {
   color: #ffb8b8;
   font-size: 13px;
 }
+.transaction-status {
+  padding: 14px 18px;
+  border: 1px solid #384359;
+  border-radius: 10px;
+  margin-bottom: 18px;
+  font-size: 13px;
+}
+.transaction-status[hidden] {
+  display: none;
+}
+.transaction-status a {
+  color: #a9edcf;
+  margin: 0 12px;
+}

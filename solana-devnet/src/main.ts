@@ -8,6 +8,13 @@ import {
 import { Deployment, Wallet, keyWallet } from "./solana";
 import { Market, SwapQuote, DepositQuote, formatUnits } from "./market";
 import { encryptLocalWallet, decryptLocalWallet } from "./wallet-backup";
+import { TransactionUpdate } from "./submit";
+import {
+  Receipt,
+  parseReceipt,
+  receiptPending,
+  reconcileReceipt,
+} from "./receipt";
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => {
   const e = document.getElementById(id);
   if (!e) throw Error("Missing " + id);
@@ -21,6 +28,79 @@ let market: Market;
 let wallet: Wallet | null = null;
 let localKey: Keypair | null = null;
 let localGenesis = "";
+let transactionReceipt: Receipt | null = null;
+const receiptSlot = () =>
+  `go-pools.receipt.v1.${localGenesis}.${wallet!.publicKey.toBase58()}`;
+function transactionHold() {
+  for (const id of ["swap", "deposit", "withdraw"])
+    $<HTMLButtonElement>(id).disabled =
+      busy || receiptPending(transactionReceipt);
+}
+function transactionStatus(state: string, signature?: string) {
+  $("transactionStatus").hidden = false;
+  const labels: Record<string, string> = {
+    preparing: "Preparing transaction…",
+    signing: "Awaiting wallet approval…",
+    ready: "Signed receipt saved; submitting…",
+    pending: "Submitted; waiting for confirmation…",
+    confirmed: "Transaction confirmed.",
+    failed: "Transaction failed on chain.",
+    unknown:
+      "Outcome unconfirmed. Check this transaction before another trade.",
+    expired:
+      "Transaction expired without confirmation on this RPC. Get a fresh quote before retrying.",
+    "not-sent": "Transaction was not submitted.",
+  };
+  text("transactionState", labels[state] || state);
+  const link = $<HTMLAnchorElement>("transactionLink");
+  link.hidden = !signature;
+  if (signature) {
+    link.href = explorer(signature, "tx");
+    link.textContent = shortened(signature) + " ↗";
+  }
+  $("checkTransaction").hidden = !receiptPending(transactionReceipt);
+  transactionHold();
+}
+function transactionUpdate(event: TransactionUpdate) {
+  if (event.state === "ready") {
+    const stored = localStorage.getItem(receiptSlot());
+    const existing = stored ? parseReceipt(stored) : null;
+    if (receiptPending(existing)) {
+      transactionReceipt = existing;
+      throw Error(
+        "An earlier transaction is unresolved. Use Check transaction before another trade.",
+      );
+    }
+    const receipt = parseReceipt(
+      JSON.stringify({
+        version: 1,
+        signature: event.signature,
+        lastValidBlockHeight: event.lastValidBlockHeight,
+        label: currentAction.split("\n")[0],
+        state: "ready",
+      }),
+    );
+    // Refuse submission if we cannot save a receipt for recovery after reload.
+    localStorage.setItem(receiptSlot(), JSON.stringify(receipt));
+    transactionReceipt = receipt;
+  } else if (
+    transactionReceipt &&
+    event.signature === transactionReceipt.signature &&
+    ["pending", "confirmed", "failed", "unknown", "not-sent"].includes(
+      event.state,
+    )
+  ) {
+    transactionReceipt.state = event.state as Receipt["state"];
+    try {
+      localStorage.setItem(receiptSlot(), JSON.stringify(transactionReceipt));
+    } catch {
+      /* The pre-broadcast receipt remains sufficient for recovery. */
+    }
+  }
+  if (event.state === "not-sent" && receiptPending(transactionReceipt))
+    transactionStatus(transactionReceipt!.state, transactionReceipt!.signature);
+  else transactionStatus(event.state, event.signature);
+}
 let backupMode: "save" | "unlock" | "restore" = "save";
 const backupSlot = () => "go-pools.encrypted-wallet.v1." + localGenesis;
 function rememberBackup(encrypted: string, address: string): string {
@@ -129,9 +209,11 @@ async function perform(fn: () => Promise<void>) {
       .querySelectorAll<HTMLButtonElement>("button")
       .forEach((b) => (b.disabled = false));
     $("fund").toggleAttribute("disabled", !wallet);
+    text("fund", "Get test tokens ＋");
     $("copy").toggleAttribute("disabled", !wallet);
     $("saveWallet").toggleAttribute("disabled", !localKey);
     await refresh();
+    transactionHold();
   }
 }
 function requestApproval(): Promise<void> {
@@ -157,9 +239,18 @@ function requestApproval(): Promise<void> {
 async function setWallet(w: Wallet, name: string, key: Keypair | null = null) {
   const nextMarket = new Market(deployment, w);
   await nextMarket.check();
+  const savedReceipt = localStorage.getItem(
+    `go-pools.receipt.v1.${localGenesis}.${w.publicKey.toBase58()}`,
+  );
+  const restoredReceipt = savedReceipt ? parseReceipt(savedReceipt) : null;
   wallet = w;
   market = nextMarket;
   localKey = key;
+  transactionReceipt = restoredReceipt;
+  market.onTransaction = transactionUpdate;
+  $("transactionStatus").hidden = !transactionReceipt;
+  if (transactionReceipt)
+    transactionStatus(transactionReceipt.state, transactionReceipt.signature);
   text("walletName", name);
   text("walletAddress", shortened(w.publicKey.toBase58()));
   $("walletAddress").title = w.publicKey.toBase58();
@@ -354,8 +445,8 @@ $("backupSubmit").onclick = async () => {
           storageWarning,
       );
     }
-    $<HTMLDialogElement>("backupDialog").close();
     await refresh();
+    $<HTMLDialogElement>("backupDialog").close();
   } catch (e) {
     text("backupError", e instanceof Error ? e.message : String(e));
   } finally {
@@ -368,6 +459,8 @@ $("backupSubmit").onclick = async () => {
 $("disconnect").onclick = () => {
   wallet = null;
   localKey = null;
+  transactionReceipt = null;
+  $("transactionStatus").hidden = true;
   market = new Market(deployment, {
     publicKey: Keypair.generate().publicKey,
     async signTransaction() {
@@ -401,6 +494,29 @@ $("disconnect").onclick = () => {
   invalidateDeposit();
   invalidateWithdraw();
 };
+$("checkTransaction").onclick = () =>
+  perform(async () => {
+    if (!transactionReceipt) return;
+    const wasPending = receiptPending(transactionReceipt);
+    transactionReceipt.state = await reconcileReceipt(
+      market.connection,
+      transactionReceipt,
+    );
+    try {
+      localStorage.setItem(receiptSlot(), JSON.stringify(transactionReceipt));
+    } catch {
+      /* A future reload can recheck the older pending receipt. */
+    }
+    transactionStatus(transactionReceipt.state, transactionReceipt.signature);
+    if (wasPending && transactionReceipt.state === "confirmed")
+      activity(
+        "Recovered confirmation: " + transactionReceipt.label,
+        transactionReceipt.signature,
+      );
+    invalidate();
+    invalidateDeposit();
+    invalidateWithdraw();
+  });
 $("copy").onclick = async () => {
   if (wallet) {
     await navigator.clipboard.writeText(wallet.publicKey.toBase58());

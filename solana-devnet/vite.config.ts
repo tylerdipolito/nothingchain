@@ -3,6 +3,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import { getOrCreateAssociatedTokenAccount, mintTo } from "@solana/spl-token";
 import { assertNetwork, Deployment } from "./src/solana";
+import { claimFunding } from "./scripts/faucet-journal";
 export default defineConfig({
   define: { "process.env": {}, global: "globalThis" },
   server: {
@@ -40,6 +41,7 @@ export default defineConfig({
         const requested = new Set<string>();
         server.middlewares.use("/api/fund", async (req, res) => {
           let acquired = false;
+          let claim: Awaited<ReturnType<typeof claimFunding>> | undefined;
           res.setHeader("Content-Type", "application/json");
           res.setHeader("Cache-Control", "no-store");
           try {
@@ -50,6 +52,8 @@ export default defineConfig({
             )
               throw Error("Use the local app to request test tokens.");
             if (busy) throw Error("Faucet is busy. Try again.");
+            busy = true;
+            acquired = true;
             let body = "";
             for await (const part of req) {
               body += part;
@@ -58,10 +62,8 @@ export default defineConfig({
             const address = new PublicKey(JSON.parse(body).address);
             if (requested.has(address.toBase58()))
               throw Error(
-                "This wallet already received test tokens during this server session.",
+                "Faucet already attempted for this wallet during this server session. Inspect the claim journal before retrying.",
               );
-            busy = true;
-            acquired = true;
             const d: Deployment = JSON.parse(
               await readFile("public/deployment.json", "utf8"),
             );
@@ -87,6 +89,12 @@ export default defineConfig({
               throw Error(
                 "Faucet already attempted for this wallet. Inspect journal before retrying.",
               );
+            claim = await claimFunding(
+              ".local/faucet-claims",
+              d.network,
+              await c.getGenesisHash(),
+              address.toBase58(),
+            );
             entries[address.toBase58()] = {
               status: "pending",
               time: new Date().toISOString(),
@@ -101,6 +109,10 @@ export default defineConfig({
                 const sig = await c.requestAirdrop(address, 1000000000);
                 await c.confirmTransaction(sig, "confirmed");
                 signatures.push(sig);
+                await claim.record({
+                  status: "airdrop-confirmed",
+                  signature: sig,
+                });
               } else {
                 throw Error(
                   "Fund this wallet with devnet SOL at faucet.solana.com first. No real SOL is required.",
@@ -118,18 +130,24 @@ export default defineConfig({
                 (mint === d.mintA ? d.symbolA : d.symbolB) === "GO"
                   ? 200000000n
                   : 20000000000n;
-              signatures.push(
-                await mintTo(
-                  c,
-                  payer,
-                  new PublicKey(mint),
-                  ata.address,
-                  payer,
-                  amount,
-                ),
+              const mintSignature = await mintTo(
+                c,
+                payer,
+                new PublicKey(mint),
+                ata.address,
+                payer,
+                amount,
               );
+              signatures.push(mintSignature);
+              await claim.record({
+                status: "mint-confirmed",
+                mint,
+                amount: amount.toString(),
+                signature: mintSignature,
+              });
             }
             entries[address.toBase58()] = { status: "completed", signatures };
+            await claim.record({ status: "completed", signatures });
             await writeFile(journalPath, JSON.stringify(entries, null, 2), {
               mode: 0o600,
             });
@@ -143,7 +161,11 @@ export default defineConfig({
             res.statusCode = 400;
             res.end(JSON.stringify({ error: e.message }));
           } finally {
-            if (acquired) busy = false;
+            try {
+              await claim?.close();
+            } finally {
+              if (acquired) busy = false;
+            }
           }
         });
       },

@@ -169,6 +169,9 @@ halving boundaries. It has a separate chain ID, ledger and default port; it does
 not migrate existing balances. Its authority is trusted, and fixed-difficulty
 public consensus remains experimental.
 
+See [LOCAL_RELEASE.md](LOCAL_RELEASE.md) for Windows startup, wallet backup,
+transaction recovery, executed verification and the remaining local/testnet limits.
+
 ## Independent Solana AMM lab
 
 See [solana-devnet/README.md](solana-devnet/README.md) for the separate Rust/Anchor
