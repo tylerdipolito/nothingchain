@@ -108,7 +108,9 @@ createServer(async (req, res) => {
           await j.load();
           return (
             j.state.operations.some((o) => o.id === "setup") &&
-            !j.state.operations.some((o) => o.id === requestId)
+            !j.state.operations.some(
+              (o) => o.id === requestId && !(o.done && o.failure),
+            )
           );
         });
       } catch {

@@ -544,7 +544,8 @@
           b.disabled =
             busy ||
             (pending && ["wrap", "unwrap", "swap", "seed"].includes(b.id)) ||
-            (seeded && b.id === "seed");
+            (seeded && b.id === "seed") ||
+            (b.id === "swap" && !el("minimum").value);
         });
       };
       async function request(command, args = [], requestId) {
@@ -601,6 +602,11 @@
       async function act(command, args = []) {
         if (busy) return;
         busy = true;
+        if (command === "swap") {
+          el("minimum").value = "";
+          el("quoteText").textContent =
+            "Get a new quote before your next swap.";
+        }
         controls();
         el("message").textContent =
           command === "status"
@@ -645,12 +651,20 @@
             render(result);
             el("message").textContent = pending
               ? "Operation saved. Mine three GoChain blocks, then recover if needed."
-              : "Confirmed. Backing check passed.";
+              : result.operations.at(-1)?.failure ||
+                "Confirmed. Backing check passed.";
           }
         } catch (e) {
           el("message").textContent =
             e.message + "\nInspect recovery before repeating an action.";
-          el("backing").textContent = "Check required";
+          // A transaction rejection is not evidence of a custody deficit. Refresh
+          // independently so the badge reports the actual backing check.
+          try {
+            const snapshot = await request("status");
+            render(snapshot);
+          } catch {
+            el("backing").textContent = "Check required";
+          }
           try {
             pending = !!savedIntent() || pending;
           } catch {
@@ -732,7 +746,9 @@
         el(id).oninput = () => {
           el("minimum").value = "";
           el("quoteText").textContent = "Inputs changed. Get a fresh quote.";
+          controls();
         };
+      el("minimum").oninput = controls;
       el("refresh").onclick = () => act("status");
       act("status");
     </script>

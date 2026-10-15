@@ -129,6 +129,7 @@ export function findTransfer(blocks: Block[], tx: GoTx, confirmations: number) {
 export interface Operation {
   id: string;
   requestHash?: string;
+  failure?: string;
   kind: "wrap" | "unwrap" | "setup" | "pool" | "swap";
   atoms?: string;
   go?: GoTx;

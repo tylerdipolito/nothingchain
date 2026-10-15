@@ -7,6 +7,52 @@ import { Keypair, SystemProgram } from "@solana/web3.js";
 import { Bridge } from "./bridge";
 import { Journal, Operation } from "./bridge-core";
 
+test("expired swaps preserve an explicitly unknown outcome; finalized failures do not count as successful swaps", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "bridge-failed-swap-"));
+  try {
+    const b = new Bridge(dir),
+      op: Operation = {
+        id: "failed-swap",
+        kind: "swap",
+        sol: { raw: "unused", signature: "sig", expiry: 10 },
+      };
+    b.journal.state.operations.push(op);
+    let sends = 0;
+    b.c = {
+      getSignatureStatuses: async () => ({ value: [null] }),
+      getBlockHeight: async () => 11,
+      sendRawTransaction: async () => {
+        sends++;
+        throw Error("must not resend expired swap");
+      },
+    } as any;
+    await assert.rejects(b.confirmSol(op), /cannot verify whether it executed/);
+    assert(op.done);
+    assert.equal(op.solConfirmed, undefined);
+    assert.equal(sends, 0);
+    const reloaded = new Journal(dir);
+    await reloaded.load();
+    assert(reloaded.state.operations[0].failure?.includes("No replacement"));
+    op.done = false;
+    op.failure = undefined;
+    b.c = {
+      getSignatureStatuses: async () => ({
+        value: [
+          {
+            confirmationStatus: "finalized",
+            err: { InstructionError: [0, { Custom: 6002 }] },
+          },
+        ],
+      }),
+    } as any;
+    await assert.rejects(b.confirmSol(op), /failed on chain/);
+    assert(op.done);
+    assert.equal(op.solConfirmed, undefined);
+  } finally {
+    await rm(dir, { recursive: true });
+  }
+});
+
 test("signed Solana bytes survive restart; finalized recovery never broadcasts twice", async () => {
   const dir = await mkdtemp(join(tmpdir(), "bridge-engine-"));
   try {

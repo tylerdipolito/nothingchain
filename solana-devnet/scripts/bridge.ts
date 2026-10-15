@@ -10,6 +10,7 @@ import {
   Transaction,
   TransactionInstruction,
   SYSVAR_RENT_PUBKEY,
+  SendTransactionError,
 } from "@solana/web3.js";
 import {
   createAssociatedTokenAccountIdempotentInstruction,
@@ -302,24 +303,61 @@ export class Bridge {
         searchTransactionHistory: true,
       })
     ).value[0];
-    if (status?.err)
+    if (status?.err) {
+      if (op.kind === "swap" && status.confirmationStatus === "finalized") {
+        op.failure =
+          "Swap failed on chain; no swap assets moved (network fees may apply). Get a fresh quote.";
+        op.done = true;
+        await this.journal.save();
+      }
       throw Error(
-        `Solana operation failed: ${signature} ${JSON.stringify(status.err)}. Reconcile manually.`,
+        op.failure ||
+          `Solana operation failed: ${signature} ${JSON.stringify(status.err)}. Reconcile manually.`,
       );
+    }
     if (status?.confirmationStatus !== "finalized") {
       if (!status) {
-        if ((await this.c.getBlockHeight("finalized")) > expiry)
+        if ((await this.c.getBlockHeight("finalized")) > expiry) {
+          if (op.kind === "swap") {
+            // No automatic replacement: history can be pruned, so absence is NOT proof
+            // of failure. Close this expired trade with an explicit unknown outcome.
+            const again = (
+              await this.c.getSignatureStatuses([signature], {
+                searchTransactionHistory: true,
+              })
+            ).value[0];
+            if (again)
+              throw Error(
+                "Swap status changed during reconciliation. Recover again.",
+              );
+            op.failure =
+              "Expired swap receipt: this RPC cannot verify whether it executed. Check wallet balances and trade history before approving another trade. No replacement was submitted.";
+            op.done = true;
+            await this.journal.save();
+            throw Error(op.failure);
+          }
           throw Error(
             `Expired/unknown operation ${signature}. Reconcile manually; no new signature created.`,
           );
-        const returned = await this.c.sendRawTransaction(
-          Buffer.from(raw, "base64"),
-          {
+        }
+        const returned = await this.c
+          .sendRawTransaction(Buffer.from(raw, "base64"), {
             skipPreflight: false,
             maxRetries: 0,
             preflightCommitment: "confirmed",
-          },
-        );
+          })
+          .catch((error: unknown) => {
+            if (
+              error instanceof SendTransactionError &&
+              error.transactionError.logs?.some((line) =>
+                line.includes("Error Code: Slippage"),
+              )
+            )
+              throw Error(
+                "Slippage protection rejected this swap: the minimum output exceeds the current quote. The signed receipt is retained; after expiry, use Recover before getting a new quote.",
+              );
+            throw error;
+          });
         if (returned !== signature)
           throw Error("RPC returned a different signature");
       }
@@ -332,10 +370,18 @@ export class Bridge {
         },
         "finalized",
       );
-      if (result.value.err)
+      if (result.value.err) {
+        if (op.kind === "swap") {
+          op.failure =
+            "Swap failed on chain; get a fresh quote. Network fees may apply.";
+          op.done = true;
+          await this.journal.save();
+        }
         throw Error(
-          `Solana operation failed: ${signature} ${JSON.stringify(result.value.err)}`,
+          op.failure ||
+            `Solana operation failed: ${signature} ${JSON.stringify(result.value.err)}`,
         );
+      }
       status = (
         await this.c.getSignatureStatuses([signature], {
           searchTransactionHistory: true,
