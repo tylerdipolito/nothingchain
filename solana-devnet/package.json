@@ -1,0 +1,31 @@
+{
+  "name": "gochain-solana-devnet",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 5174 --strictPort",
+    "build": "tsc --noEmit && vite build",
+    "setup": "tsx scripts/setup.ts",
+    "verify": "tsx scripts/verify.ts",
+    "test": "tsx --test src/*.test.ts",
+    "keys": "tsx scripts/keys.ts",
+    "setup:local": "tsx scripts/setup.ts --localnet",
+    "idl": "tsx scripts/generate-idl.ts"
+  },
+  "dependencies": {
+    "@solana/web3.js": "1.98.4",
+    "@solana/spl-token": "0.4.14",
+    "@coral-xyz/anchor": "0.32.1",
+    "decimal.js": "10.6.0",
+    "bn.js": "5.2.5",
+    "buffer": "6.0.3"
+  },
+  "devDependencies": {
+    "vite": "6.4.3",
+    "typescript": "5.9.3",
+    "tsx": "4.20.6",
+    "@types/node": "22.19.0",
+    "@types/bn.js": "5.2.0"
+  }
+}

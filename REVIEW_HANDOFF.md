@@ -36,3 +36,18 @@ service. Dynamic fees, privacy and post-quantum cryptography are not implemented
 Report confirmed findings by severity with reproducible steps, impact, code
 locations, and recommended fixes. Distinguish test/model limitations from security
 bugs. Do not change economics, deploy, or use real assets during the review.
+
+## Independent Solana AMM prototype
+
+The solana-devnet/ directory adds our own Rust/Anchor constant-product program
+and a wallet-connected browser app. Read its README for build/deployment/test
+commands and the exact public devnet funding blocker. The current verified
+deployment is localnet, not public devnet. No Orca engine or SDK is used.
+
+Prioritize pool/vault/LP mint authorities, atomic deposit/swap/withdraw behavior,
+rounding and overflow, quote expiry, locked LP ownership, client integer parity,
+browser signing, Vite private-file denial and faucet origin/journal checks.
+Run Rust unit tests, npm test/build, and localnet integration verification.
+Inherited npm advisories remain; concentrated liquidity and mainnet are out of
+scope. Private deployer/program keys and runtime deployment JSON are excluded
+from Git. Generate fresh test keys for your own local validator.

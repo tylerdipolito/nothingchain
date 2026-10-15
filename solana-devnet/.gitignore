@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.local/
+public/deployment.json
+*.log
+
+target/
+audit.local.json

@@ -162,3 +162,10 @@ The Windows race detector requires a compatible C compiler; normal builds do not
 ## Isolated AMM experiment
 
 See [AMM.md](AMM.md) for the separate GO/testUSD testnet, pool rules, build command, and CLI deposit/swap/withdraw workflow. The ordinary build and existing ledger remain on the original development network.
+
+## Independent Solana AMM lab
+
+See [solana-devnet/README.md](solana-devnet/README.md) for the separate Rust/Anchor
+AMM, wallet-connected swap and liquidity interface, local Solana verification,
+and pending public devnet funding step. It uses our own program, with no Orca
+engine or SDK dependency. These SPL test tokens are separate from mined GO.

@@ -1,0 +1,10 @@
+[features]
+resolution = true
+skip-lint = false
+[programs.localnet]
+goamm = "4TdBWFzDUrn4Y5fB9mNJHWpdPP8PNyPnxY7s7FcN7AtK"
+[programs.devnet]
+goamm = "4TdBWFzDUrn4Y5fB9mNJHWpdPP8PNyPnxY7s7FcN7AtK"
+[provider]
+cluster = "devnet"
+wallet = ".local/deployer.json"

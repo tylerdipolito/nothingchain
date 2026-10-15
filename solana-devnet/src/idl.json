@@ -1,0 +1,351 @@
+{
+  "address": "4TdBWFzDUrn4Y5fB9mNJHWpdPP8PNyPnxY7s7FcN7AtK",
+  "metadata": {
+    "name": "goamm",
+    "version": "0.1.0",
+    "spec": "0.1.0"
+  },
+  "instructions": [
+    {
+      "name": "initialize",
+      "discriminator": [175, 175, 109, 31, 13, 152, 155, 237],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "mint_a",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "mint_b",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "pool",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "vault_a",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "vault_b",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "lp_mint",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "locked_lp",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "token_program",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "system_program",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "rent",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "deposit",
+      "discriminator": [242, 35, 198, 137, 82, 225, 242, 182],
+      "accounts": [
+        {
+          "name": "user",
+          "writable": false,
+          "signer": true
+        },
+        {
+          "name": "pool",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "vault_a",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "vault_b",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "lp_mint",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "locked_lp",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "user_a",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "user_b",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "user_lp",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "token_program",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "max_a",
+          "type": "u64"
+        },
+        {
+          "name": "max_b",
+          "type": "u64"
+        },
+        {
+          "name": "min_shares",
+          "type": "u64"
+        },
+        {
+          "name": "expires_at_slot",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "withdraw",
+      "discriminator": [183, 18, 70, 156, 148, 109, 161, 34],
+      "accounts": [
+        {
+          "name": "user",
+          "writable": false,
+          "signer": true
+        },
+        {
+          "name": "pool",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "vault_a",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "vault_b",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "lp_mint",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "locked_lp",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "user_a",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "user_b",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "user_lp",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "token_program",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "shares",
+          "type": "u64"
+        },
+        {
+          "name": "min_a",
+          "type": "u64"
+        },
+        {
+          "name": "min_b",
+          "type": "u64"
+        },
+        {
+          "name": "expires_at_slot",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "swap",
+      "discriminator": [248, 198, 158, 145, 225, 117, 135, 200],
+      "accounts": [
+        {
+          "name": "user",
+          "writable": false,
+          "signer": true
+        },
+        {
+          "name": "pool",
+          "writable": false,
+          "signer": false
+        },
+        {
+          "name": "vault_a",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "vault_b",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "user_a",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "user_b",
+          "writable": true,
+          "signer": false
+        },
+        {
+          "name": "token_program",
+          "writable": false,
+          "signer": false
+        }
+      ],
+      "args": [
+        {
+          "name": "a_to_b",
+          "type": "bool"
+        },
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "min_output",
+          "type": "u64"
+        },
+        {
+          "name": "expires_at_slot",
+          "type": "u64"
+        }
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Pool",
+      "discriminator": [241, 154, 109, 4, 17, 177, 109, 188]
+    }
+  ],
+  "types": [
+    {
+      "name": "Pool",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mint_a",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint_b",
+            "type": "pubkey"
+          },
+          {
+            "name": "vault_a",
+            "type": "pubkey"
+          },
+          {
+            "name": "vault_b",
+            "type": "pubkey"
+          },
+          {
+            "name": "lp_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ],
+  "errors": [
+    {
+      "name": "MintOrder",
+      "code": 6000,
+      "msg": "MintOrder"
+    },
+    {
+      "name": "ZeroAmount",
+      "code": 6001,
+      "msg": "ZeroAmount"
+    },
+    {
+      "name": "Slippage",
+      "code": 6002,
+      "msg": "Slippage"
+    },
+    {
+      "name": "Overflow",
+      "code": 6003,
+      "msg": "Overflow"
+    },
+    {
+      "name": "EmptyPool",
+      "code": 6004,
+      "msg": "EmptyPool"
+    },
+    {
+      "name": "Expired",
+      "code": 6005,
+      "msg": "Expired"
+    }
+  ]
+}

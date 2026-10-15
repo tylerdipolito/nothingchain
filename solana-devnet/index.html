@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      name="description"
+      content="Go Pools: an independent Solana AMM experiment with local wallet signing."
+    />
+    <title>Go Pools — Solana lab</title>
+  </head>
+  <body>
+    <div class="ambient ambient-one"></div>
+    <div class="ambient ambient-two"></div>
+    <header class="topbar">
+      <a class="brand" href="#swap" aria-label="Go Pools home"
+        ><span class="brand-mark">g<span>↗</span></span
+        >go<span class="brand-light">pools</span
+        ><span class="lab-tag">LAB</span></a
+      >
+      <nav aria-label="Main navigation">
+        <button class="nav active" data-view="swap">Swap</button
+        ><button class="nav" data-view="pools">Pools</button
+        ><button class="nav" data-view="liquidity">My liquidity</button>
+      </nav>
+      <div class="header-actions">
+        <span class="network" id="network">Connecting</span
+        ><button class="button connect" id="connect">
+          Connect wallet <span>↗</span>
+        </button>
+      </div>
+    </header>
+    <main>
+      <div class="notice">
+        <span class="notice-icon">◉</span
+        ><span id="networkNote"
+          >Loading the configured Solana test network…</span
+        ><a id="programLink" target="_blank" rel="noreferrer"
+          >View program ↗</a
+        >
+      </div>
+      <section class="hero">
+        <div>
+          <p class="eyebrow">YOUR LIQUIDITY. YOUR NEXT MOVE.</p>
+          <h1>A little more flow.<br /><span>A lot more possibility.</span></h1>
+          <p class="hero-copy">
+            Swap test tokens. Supply a pool. Watch the mechanics work.
+          </p>
+          <div class="hero-tags">
+            <span>◎ Solana powered</span><span>↗ Independent AMM</span
+            ><span>◈ 0.3% pool fee</span>
+          </div>
+        </div>
+        <div class="orbit-art" aria-hidden="true">
+          <div class="orbit ring-one"></div>
+          <div class="orbit ring-two"></div>
+          <div class="orbit ring-three"></div>
+          <div class="orb go-orb">g</div>
+          <div class="orb usd-orb">$</div>
+          <span class="orbit-label">two assets, one pool</span
+          ><span class="orbit-star">✦</span>
+        </div>
+      </section>
+      <div id="error" class="error" role="alert" hidden></div>
+      <div class="workspace">
+        <aside class="market-side">
+          <div class="section-title">
+            <h2>In the pool</h2>
+            <span class="live"
+              ><i></i><span id="liveStatus">Connecting</span></span
+            >
+          </div>
+          <article class="panel pool-summary">
+            <div class="pair">
+              <div class="pair-icons">
+                <span class="token go-token">g</span
+                ><span class="token usd-token">$</span>
+              </div>
+              <div>
+                <h3>GO / testUSD</h3>
+                <p>Full-range liquidity</p>
+              </div>
+              <span class="fee-badge">0.30%</span>
+            </div>
+            <div class="pool-price">
+              <small>POOL EXCHANGE RATE</small
+              ><strong
+                ><span id="price">—</span><span> testUSD / GO</span></strong
+              >
+            </div>
+            <div class="reserve-row">
+              <span><i class="reserve-dot go-dot"></i>GO reserve</span
+              ><strong id="reserveGO">—</strong>
+            </div>
+            <div class="reserve-row">
+              <span><i class="reserve-dot usd-dot"></i>testUSD reserve</span
+              ><strong id="reserveUSD">—</strong>
+            </div>
+            <div class="reserve-bar"><span></span></div>
+            <p class="subtle">
+              The reserve ratio sets the pool price. These test tokens have no
+              dollar backing.
+            </p>
+          </article>
+          <article class="explain-card">
+            <div class="explain-icon">⇄</div>
+            <h3>Every trade leaves a trace.</h3>
+            <p>
+              Token balances move on Solana. Quotes include the pool fee, and
+              your minimum received is checked by the program.
+            </p>
+            <button class="text-button" id="showPool">
+              Explore the pool <span>↗</span>
+            </button>
+          </article>
+        </aside>
+        <section id="view-swap" class="view trade-column">
+          <div class="section-title">
+            <h2>Make your move</h2>
+            <span class="muted">One pool. Both directions.</span>
+          </div>
+          <article class="panel trade-panel">
+            <div class="trade-heading">
+              <h2>Swap</h2>
+              <span class="slippage">◈ Slippage 0.5%</span>
+            </div>
+            <label class="amount-card"
+              ><span class="input-caption"
+                >You pay <span id="inputBalance">Balance: —</span></span
+              ><span class="amount-line"
+                ><input
+                  id="swapAmount"
+                  inputmode="decimal"
+                  placeholder="0.00"
+                  value="100"
+                  aria-label="Swap input amount"
+                /><span class="asset"
+                  ><span class="token small usd-token" id="inputIcon">$</span
+                  ><strong id="inputSymbol">testUSD</strong></span
+                ></span
+              ><small>Test tokens only</small></label
+            >
+            <div class="direction-wrap">
+              <button
+                class="direction"
+                id="reverse"
+                aria-label="Reverse swap direction"
+              >
+                ↓
+              </button>
+            </div>
+            <div class="amount-card output-card">
+              <span class="input-caption"
+                >You receive <span>Estimated</span></span
+              >
+              <div class="amount-line">
+                <strong id="swapOutput">—</strong
+                ><span class="asset"
+                  ><span class="token small go-token" id="outputIcon">g</span
+                  ><strong id="outputSymbol">GO</strong></span
+                >
+              </div>
+              <small id="outputBalance">Balance: —</small>
+            </div>
+            <div class="quote-details">
+              <div>
+                <span>Minimum received</span><strong id="swapMinimum">—</strong>
+              </div>
+              <div><span>Pool fee</span><strong id="swapFee">—</strong></div>
+              <div>
+                <span>Execution vs. spot, including fee</span
+                ><strong id="swapImpact">—</strong>
+              </div>
+              <div>
+                <span>Network fee</span
+                ><strong>Paid separately in test SOL</strong>
+              </div>
+            </div>
+            <button class="button primary full" id="getQuote">
+              Get quote <span>↗</span></button
+            ><button class="button primary full" id="swap" hidden>
+              Review swap <span>→</span>
+            </button>
+            <p class="form-note">
+              Quotes expire after 150 Solana slots. A wallet approval is
+              required to swap.
+            </p>
+          </article>
+        </section>
+        <section id="view-pools" class="view trade-column" hidden>
+          <div class="section-title">
+            <h2>Pool explorer</h2>
+            <span class="muted">Read directly from Solana</span>
+          </div>
+          <article class="panel details-panel">
+            <div class="pair">
+              <div class="pair-icons">
+                <span class="token go-token">g</span
+                ><span class="token usd-token">$</span>
+              </div>
+              <div>
+                <h2>GO / testUSD</h2>
+                <p>Our constant-product program</p>
+              </div>
+            </div>
+            <dl class="addresses" id="addresses"></dl>
+            <div class="info-note">
+              This first version uses full-range liquidity shares. Concentrated
+              price ranges, APR, trading history and external routing are not
+              implemented.
+            </div>
+            <button class="button primary full" id="goDeposit">
+              Provide liquidity →
+            </button>
+          </article>
+        </section>
+        <section id="view-liquidity" class="view trade-column" hidden>
+          <div class="section-title">
+            <h2>My liquidity</h2>
+            <span class="muted">Your share of the reserves</span>
+          </div>
+          <article class="panel details-panel">
+            <div class="liquidity-stats">
+              <div>
+                <small>YOUR LP SHARES</small><strong id="lpBalance">—</strong>
+              </div>
+              <div>
+                <small>POOL OWNERSHIP</small><strong id="lpShare">—</strong>
+              </div>
+            </div>
+            <p class="subtle" id="lpClaim">
+              Connect a wallet to see your claim on the pool.
+            </p>
+            <div class="mode-tabs">
+              <button id="depositTab" class="selected">Deposit</button
+              ><button id="withdrawTab">Withdraw</button>
+            </div>
+            <div id="depositForm">
+              <label class="field-label" for="depositGO">GO to deposit</label
+              ><input
+                class="field"
+                id="depositGO"
+                inputmode="decimal"
+                value="1"
+              />
+              <p class="subtle">
+                Matching testUSD is calculated from the current reserves. Both
+                assets are required.
+              </p>
+              <div class="quote-details">
+                <div>
+                  <span>Maximum matching testUSD</span
+                  ><strong id="depositUSD">—</strong>
+                </div>
+                <div>
+                  <span>Minimum LP shares</span
+                  ><strong id="depositMinimum">—</strong>
+                </div>
+              </div>
+              <button class="button primary full" id="quoteDeposit">
+                Preview deposit</button
+              ><button class="button primary full" id="deposit" hidden>
+                Review deposit →
+              </button>
+            </div>
+            <div id="withdrawForm" hidden>
+              <label class="field-label" for="withdrawShares"
+                >LP shares to redeem</label
+              ><input
+                class="field"
+                id="withdrawShares"
+                inputmode="decimal"
+                value="1"
+              />
+              <p class="subtle">
+                Redeem your liquidity shares for both tokens. Your shares are
+                burned on confirmation.
+              </p>
+              <div class="quote-details">
+                <div>
+                  <span>Estimated GO</span><strong id="withdrawGO">—</strong>
+                </div>
+                <div>
+                  <span>Estimated testUSD</span
+                  ><strong id="withdrawUSD">—</strong>
+                </div>
+              </div>
+              <button class="button primary full" id="quoteWithdraw">
+                Preview withdrawal</button
+              ><button class="button primary full" id="withdraw" hidden>
+                Review withdrawal →
+              </button>
+            </div>
+          </article>
+        </section>
+        <aside class="wallet-side">
+          <div class="section-title">
+            <h2>Your wallet</h2>
+            <span class="muted">Signs locally</span>
+          </div>
+          <article class="panel wallet-card">
+            <div class="wallet-identity">
+              <span class="wallet-avatar">◈</span>
+              <div>
+                <strong id="walletName">Not connected</strong
+                ><small id="walletAddress">Choose a wallet to begin</small>
+              </div>
+              <button
+                class="icon-button"
+                id="copy"
+                aria-label="Copy wallet address"
+                disabled
+              >
+                ▣
+              </button>
+            </div>
+            <div class="wallet-balances">
+              <div>
+                <span><span class="token tiny go-token">g</span>GO</span
+                ><strong id="walletGO">—</strong>
+              </div>
+              <div>
+                <span><span class="token tiny usd-token">$</span>testUSD</span
+                ><strong id="walletUSD">—</strong>
+              </div>
+              <div>
+                <span><span class="token tiny sol-token">≋</span>Test SOL</span
+                ><strong id="walletSOL">—</strong>
+              </div>
+            </div>
+            <button class="button secondary full" id="fund" disabled>
+              Get test tokens <span>＋</span></button
+            ><button class="text-button full" id="disconnect" hidden>
+              Disconnect wallet
+            </button>
+            <p class="subtle">
+              Private keys never go to the web server. Session-wallet keys exist
+              only in this tab.
+            </p>
+          </article>
+          <article class="activity-card">
+            <div class="section-title">
+              <h2>Activity</h2>
+              <span class="activity-count" id="activityCount">0</span>
+            </div>
+            <div id="activity">
+              <div class="empty-activity">
+                <span>↗</span><strong>Your next move starts here.</strong>
+                <p>Confirmed actions will appear in this session.</p>
+              </div>
+            </div>
+          </article>
+        </aside>
+      </div>
+      <footer>
+        <span
+          ><span class="footer-dot"></span>Go Pools · independent Solana
+          experiment</span
+        ><span
+          >Inspired by thoughtful DEX design. Not affiliated with Orca.</span
+        ><span id="updated">Waiting for chain data</span>
+      </footer>
+    </main>
+    <dialog id="walletDialog">
+      <div class="dialog-head">
+        <div>
+          <p class="eyebrow">YOUR KEYS, YOUR APPROVAL</p>
+          <h2>Choose your wallet</h2>
+        </div>
+        <button
+          class="icon-button"
+          id="closeWallet"
+          aria-label="Close wallet selection"
+        >
+          ×
+        </button>
+      </div>
+      <p class="subtle">
+        Connect an installed Solana wallet, or try a temporary wallet on the
+        local validator.
+      </p>
+      <button class="wallet-choice" id="phantom">
+        <span>◉</span>
+        <div>
+          <strong>Phantom</strong
+          ><small>Approve transactions in your extension</small>
+        </div>
+        <span>↗</span></button
+      ><button class="wallet-choice" id="solflare">
+        <span>☀</span>
+        <div>
+          <strong>Solflare</strong
+          ><small>Approve transactions in your extension</small>
+        </div>
+        <span>↗</span></button
+      ><button class="wallet-choice" id="session">
+        <span>◈</span>
+        <div>
+          <strong>Try a local session wallet</strong
+          ><small>Temporary key · disappears on reload · localnet only</small>
+        </div>
+        <span>→</span>
+      </button>
+      <p class="subtle">
+        Never import a seed phrase here. This is a test-token application.
+      </p>
+    </dialog>
+    <dialog id="approval">
+      <div class="dialog-head">
+        <div>
+          <p class="eyebrow">LOCAL SESSION WALLET</p>
+          <h2>Approve test transaction</h2>
+        </div>
+      </div>
+      <p id="approvalSummary"></p>
+      <p class="subtle">
+        This transaction is signed inside your browser and submitted to the
+        local Solana validator. No real funds are involved.
+      </p>
+      <div class="approval-actions">
+        <button class="button secondary" id="reject">Cancel</button
+        ><button class="button primary" id="approve">
+          Approve transaction
+        </button>
+      </div>
+    </dialog>
+    <script type="module" src="/src/entry.ts"></script>
+  </body>
+</html>
