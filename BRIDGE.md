@@ -172,13 +172,60 @@ withdrawals; pool reserves 4.90224916 wGO / 510 testUSD. The dedicated user has
 point-in-time local results, not seeded production balances. The full suite had
 20 passing tests and the TypeScript/Vite build passed. HTTP checks rejected wrong
 origin/token, unsupported commands and private file routes, and executed the same
-quoted swap successfully. Browser rendering of real balances was checked; click
-automation was blocked by a stale native confirmation dialog in the in-app browser,
-so browser button execution is not claimed as verified. The updated UI uses an
-in-page review dialog instead of native JavaScript confirmations.
+quoted swap successfully. Subsequent browser verification passed cancellation,
+liquidity seed, quote/swap, reload during submission, recovery, GO lock/mint,
+wGO burn/GO release and manual mining on disposable wallets. The isolated browser
+round trip ended with custody and supply both 9 and no pending withdrawals.
 
-HTTP action requests have no persistent client request ID: manually submitting the
-same wrap after completion intentionally creates a new funded deposit. There are
-no automatic HTTP retries. After a lost response, refresh and inspect the journal
-or recover before submitting another action. Persisted signed-operation recovery
-prevents replaying an existing payment/mint; it is not global request deduplication.
+## Request identity and interrupted operations
+
+HTTP wrap, unwrap, pool seed and swap now require a request ID. The operation stores
+that ID and a SHA-256 fingerprint of its command and exact argument strings before
+broadcast. Replaying the same ID/parameters recovers the original operation, even
+after completion or server restart; changing its parameters is rejected. This
+serializes through the existing directory lock, not a second request database.
+Different IDs are different authorized transactions, not automatically deduplicated.
+Manual test mining is excluded: every mining click requests more test blocks.
+
+The UI saves the request in localStorage **before** sending and retains it through
+reloads, lost responses and uncertain errors. Recover resubmits that saved ID and
+parameters. A completed journal receipt clears it. A validation error can clear it
+only when the server locks and reads a valid journal proving no intent was saved.
+Storage failures stop submission. Web Locks prevent two tabs from preparing new
+requests simultaneously; another unresolved saved request blocks a new trade.
+The slot is scoped to the mint and browser origin. Clearing browser storage or
+using another browser can lose that client receipt; inspect the server journal.
+This is not cross-machine coordination or protection against malicious local code.
+
+CLI callers can pass `--request-id UUID` and must retain/reuse that ID themselves.
+Without it, an explicit CLI invocation is a new transaction. Amount strings are
+fingerprinted exactly: `1` and `1.0` with one ID are a parameter conflict.
+
+Additional reproducible tests:
+
+```powershell
+cd solana-devnet
+npm run verify:bridge-crashes -- --isolated
+# Use the directory printed by that run, after completing any manual pending actions:
+npm run verify:bridge-http -- --isolated .local/bridge-crash-TIMESTAMP
+cd ..
+$env:GO_BRIDGE_REORG = '1'
+go test -tags "amm checkpoint" -run '^TestBridgeRealReorganization$' -v .
+Remove-Item Env:GO_BRIDGE_REORG
+```
+
+The crash suite kills only its owned child at four real boundaries: saved deposit
+before submission, mint after broadcast, burn after broadcast and GO release after
+submission. It verifies the terminated PID before removing that child's stale lock.
+Recovery, same-ID replay and conflicting parameters are checked against real chains;
+exactly one release is included and custody/supply both end at 9. Production has no
+fault-injection switch or automatic stale-lock removal. This is process-crash
+coverage, not a physical power-loss test.
+
+The opt-in Go test owns a separate in-memory node and genuinely adopts a longer,
+valid fork that removes a confirmed bridged deposit. The bridge then refuses status,
+wrap and unwrap without further issuance/payment. Existing wGO stays circulating
+and becomes unbacked: halting is detection/containment, not automatic restitution.
+Its reorg trigger is a test-only HTTP handler, absent from production. Ordinary
+test runs skip this cross-chain test unless explicitly enabled. Neither suite resets
+the user's ledgers or existing mint; all test keys/assets/reports remain ignored.

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import { runBridge } from "./bridge";
+import { Journal, exclusive } from "./bridge-core";
 
 const args = process.argv.slice(2);
 const dirIndex = args.indexOf("--dir"),
@@ -13,11 +14,14 @@ if (!Number.isInteger(port) || port < 1024 || port > 65535)
   throw Error("Invalid bridge UI port");
 const host = `127.0.0.1:${port}`,
   token = randomBytes(32).toString("hex");
+const initial = await runBridge(directory, "status", []);
+if (!("config" in initial)) throw Error("Missing bridge configuration");
 const html = (
   await readFile(new URL("./bridge-ui.html", import.meta.url), "utf8")
-).replaceAll("__TOKEN__", token);
+)
+  .replaceAll("__TOKEN__", token)
+  .replaceAll("__BRIDGE_ID__", initial.config.mint);
 // Verify configuration before exposing even the local operator UI. No auto-init/reset.
-await runBridge(directory, "status", []);
 let busy = false;
 const allowed = new Set([
   "status",
@@ -39,6 +43,7 @@ createServer(async (req, res) => {
     `default-src 'none'; script-src 'nonce-${token}'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`,
   );
   let acquired = false;
+  let requestId: string | undefined;
   try {
     if (req.headers.host !== host)
       throw Error("Use the exact loopback bridge URL");
@@ -74,13 +79,43 @@ createServer(async (req, res) => {
       data.args.some((a: unknown) => typeof a !== "string" || a.length > 100)
     )
       throw Error("Invalid bridge command");
-    const result = await runBridge(directory, data.command, data.args);
+    const transaction = ["wrap", "unwrap", "seed-pool", "swap"].includes(
+      data.command,
+    );
+    if (
+      transaction &&
+      (typeof data.requestId !== "string" ||
+        !/^[a-f0-9-]{36}$/.test(data.requestId))
+    )
+      throw Error("Transaction request ID required");
+    requestId = transaction ? data.requestId : undefined;
+    const result = await runBridge(
+      directory,
+      data.command,
+      data.args,
+      requestId,
+    );
     res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify(result));
   } catch (e: any) {
     res.statusCode = res.statusCode === 409 ? 409 : 400;
     res.setHeader("Content-Type", "application/json");
-    res.end(JSON.stringify({ error: e.message }));
+    let safeToClear = false;
+    if (acquired && requestId) {
+      try {
+        safeToClear = await exclusive(directory, async () => {
+          const j = new Journal(directory);
+          await j.load();
+          return (
+            j.state.operations.some((o) => o.id === "setup") &&
+            !j.state.operations.some((o) => o.id === requestId)
+          );
+        });
+      } catch {
+        /* Busy/corrupt/unknown history never permits forgetting an intent. */
+      }
+    }
+    res.end(JSON.stringify({ error: e.message, safeToClear }));
   } finally {
     if (acquired) busy = false;
   }

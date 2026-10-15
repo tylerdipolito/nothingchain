@@ -287,6 +287,22 @@
     <script nonce="__TOKEN__">
       const token = "__TOKEN__";
       const el = (id) => document.getElementById(id);
+      const intentSlot = "go-bridge.intent.v1.__BRIDGE_ID__";
+      const transactions = new Set(["wrap", "unwrap", "seed-pool", "swap"]);
+      function savedIntent() {
+        const raw = localStorage.getItem(intentSlot);
+        if (!raw) return null;
+        const i = JSON.parse(raw);
+        if (
+          !transactions.has(i.command) ||
+          !Array.isArray(i.args) ||
+          typeof i.requestId !== "string"
+        )
+          throw Error(
+            "Invalid saved request. Preserve it for operator reconciliation.",
+          );
+        return i;
+      }
       let busy = false,
         pending = false,
         seeded = false;
@@ -298,17 +314,25 @@
             (seeded && b.id === "seed");
         });
       };
-      async function request(command, args = []) {
+      async function request(command, args = [], requestId) {
         const response = await fetch("/api", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             "X-Bridge-Token": token,
           },
-          body: JSON.stringify({ command, args }),
+          body: JSON.stringify({ command, args, requestId }),
         });
         const result = await response.json();
-        if (!response.ok) throw Error(result.error || "Request failed");
+        if (!response.ok) {
+          if (
+            result.safeToClear &&
+            requestId &&
+            savedIntent()?.requestId === requestId
+          )
+            localStorage.removeItem(intentSlot);
+          throw Error(result.error || "Request failed");
+        }
         return result;
       }
       function render(s) {
@@ -326,7 +350,13 @@
           b.pending_withdrawal_atoms +
           " atoms";
         el("details").textContent = JSON.stringify(s, null, 2);
-        pending = s.operations.some((o) => !o.done);
+        const saved = savedIntent();
+        if (
+          saved &&
+          s.operations.some((o) => o.id === saved.requestId && o.done)
+        )
+          localStorage.removeItem(intentSlot);
+        pending = !!savedIntent() || s.operations.some((o) => !o.done);
         seeded = !!s.pool;
         el("reserves").textContent = s.pool
           ? s.pool.wGO + " wGO / " + s.pool.testUSD + " testUSD"
@@ -343,7 +373,32 @@
             ? "Checking networks…"
             : "Working… Solana finality can take several seconds. Do not submit twice.";
         try {
-          const result = await request(command, args);
+          let result;
+          const stored = command === "recover" ? savedIntent() : null;
+          if (transactions.has(command) || stored) {
+            if (!navigator.locks)
+              throw Error("Browser locking unavailable; use the CLI.");
+            result = await navigator.locks.request(
+              intentSlot,
+              { ifAvailable: true },
+              async (lock) => {
+                if (!lock)
+                  throw Error(
+                    "Another bridge tab is submitting a transaction.",
+                  );
+                let intent = stored;
+                if (!intent) {
+                  if (savedIntent())
+                    throw Error(
+                      "Recover the saved request before another transaction.",
+                    );
+                  intent = { command, args, requestId: crypto.randomUUID() };
+                  localStorage.setItem(intentSlot, JSON.stringify(intent));
+                }
+                return request(intent.command, intent.args, intent.requestId);
+              },
+            );
+          } else result = await request(command, args);
           if (command === "quote") {
             el("minimum").value = result.minimum;
             el("quoteText").textContent =
@@ -362,6 +417,11 @@
           el("message").textContent =
             e.message + "\nInspect recovery before repeating an action.";
           el("backing").textContent = "Check required";
+          try {
+            pending = !!savedIntent() || pending;
+          } catch {
+            pending = true;
+          }
         } finally {
           busy = false;
           controls();

@@ -1,7 +1,7 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import {
   Connection,
   Keypair,
@@ -79,6 +79,15 @@ const safeInteger = (v: number) => {
 };
 
 export class Bridge {
+  request?: { id: string; hash: string };
+  operation(kind: Operation["kind"], atoms?: string): Operation {
+    return {
+      id: this.request?.id || randomUUID(),
+      requestHash: this.request?.hash,
+      kind,
+      ...(atoms ? { atoms } : {}),
+    };
+  }
   c!: Connection;
   config!: Config;
   keys!: Keys;
@@ -515,11 +524,7 @@ export class Bridge {
     const account = await this.go(`/balance/${this.config.userGo}`);
     if (safeInteger(account.available_balance_atoms) < n)
       throw Error("Mine GO to the dedicated bridge user first");
-    const op: Operation = {
-      id: randomUUID(),
-      kind: "wrap",
-      atoms: n.toString(),
-    };
+    const op = this.operation("wrap", n.toString());
     op.go = goSign(
       this.keys.userGo,
       this.config.chain,
@@ -541,11 +546,7 @@ export class Bridge {
     );
     if ((await getAccount(this.c, ata)).amount < n)
       throw Error("Insufficient wGO");
-    const op: Operation = {
-      id: randomUUID(),
-      kind: "unwrap",
-      atoms: n.toString(),
-    };
+    const op = this.operation("unwrap", n.toString());
     this.journal.state.operations.push(op);
     const memo = new TransactionInstruction({
       programId: new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"),
@@ -622,7 +623,7 @@ export class Bridge {
         })
         .instruction(),
     );
-    const op: Operation = { id: randomUUID(), kind: "pool" };
+    const op = this.operation("pool");
     this.journal.state.operations.push(op);
     await this.prepareSol(op, tx.instructions, user);
     await this.recover();
@@ -657,7 +658,7 @@ export class Bridge {
         tokenProgram: TOKEN_PROGRAM_ID,
       })
       .transaction();
-    const op: Operation = { id: randomUUID(), kind: "swap" };
+    const op = this.operation("swap");
     this.journal.state.operations.push(op);
     await this.prepareSol(op, tx.instructions, user);
     await this.recover();
@@ -736,6 +737,7 @@ export async function runBridge(
   directory: string,
   command: string,
   args: string[],
+  requestId?: string,
 ) {
   return exclusive(directory, async () => {
     const bridge = new Bridge(directory);
@@ -746,6 +748,28 @@ export async function runBridge(
       );
     else {
       await bridge.load();
+      if (requestId !== undefined) {
+        if (
+          !/^[a-f0-9-]{36}$/.test(requestId) ||
+          !["wrap", "unwrap", "seed-pool", "swap"].includes(command)
+        )
+          throw Error("Invalid transaction request ID");
+        const hash = createHash("sha256")
+          .update(JSON.stringify({ command, args }))
+          .digest("hex");
+        const existing = bridge.journal.state.operations.find(
+          (o) => o.id === requestId,
+        );
+        if (existing) {
+          if (existing.requestHash !== hash)
+            throw Error(
+              "Request ID already belongs to different transaction parameters",
+            );
+          await bridge.recover();
+          return bridge.status();
+        }
+        bridge.request = { id: requestId, hash };
+      }
       if (command === "recover") await bridge.recover();
       else if (command === "wrap") await bridge.wrap(args[0]);
       else if (command === "unwrap") await bridge.unwrap(args[0]);
@@ -778,7 +802,14 @@ if (
     directory = args[index + 1];
     args.splice(index, 2);
   }
-  runBridge(resolve(directory), args.shift() || "status", args)
+  const requestIndex = args.indexOf("--request-id");
+  let requestId: string | undefined;
+  if (requestIndex >= 0) {
+    requestId = args[requestIndex + 1];
+    if (!requestId) throw Error("Missing --request-id value");
+    args.splice(requestIndex, 2);
+  }
+  runBridge(resolve(directory), args.shift() || "status", args, requestId)
     .then((result) => console.log(JSON.stringify(result, null, 2)))
     .catch((e) => {
       console.error(e.message);

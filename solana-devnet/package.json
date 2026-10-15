@@ -12,6 +12,8 @@
     "bridge": "tsx scripts/bridge.ts",
     "bridge:ui": "tsx scripts/bridge-server.ts",
     "verify:bridge": "tsx scripts/verify-bridge.ts",
+    "verify:bridge-crashes": "tsx scripts/verify-bridge-crashes.ts",
+    "verify:bridge-http": "tsx scripts/verify-bridge-http.ts",
     "test": "tsx --test src/*.test.ts scripts/*.test.ts",
     "keys": "tsx scripts/keys.ts",
     "setup:local": "tsx scripts/setup.ts --localnet",

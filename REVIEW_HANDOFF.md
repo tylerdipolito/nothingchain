@@ -6,6 +6,21 @@ Original baseline: abd9a86af75162e3dd3efc1e70d114e67261c576
 
 ## October 15 review follow-up
 
+- Bridge hardening: transaction HTTP requests now require durable request IDs tied
+  to exact parameters; the browser retains unfinished intents across reloads and
+  uses Web Locks to prevent competing tabs from preparing transactions together.
+  Exact replay recovers the original operation; changed parameters are rejected.
+- Real owned-worker kills at deposit-before-send, mint-after-send, burn-after-send
+  and release-after-send all recovered without duplicate issuance/payment.
+  `npm run verify:bridge-crashes -- --isolated` and `verify:bridge-http` cover these
+  flows plus repeated/concurrent HTTP requests and server restart.
+- `GO_BRIDGE_REORG=1 go test -tags "amm checkpoint" -run TestBridgeRealReorganization`
+  runs an isolated Go/Solana test that actually adopts a longer valid Go fork,
+  removes backing and verifies bridge halt. This exposes the documented limitation:
+  already-issued wGO is not automatically repaired after backing disappears.
+- Browser cancellation, seed, swap, reload/recovery, wrap/mint and burn/release
+  now verified on disposable test wallets. See `BRIDGE.md` for commands and scope.
+
 - Added a separate **trusted local** GO/Solana bridge prototype, with server-held
   dedicated wallets, eight-decimal wGO, lock/mint and finalized burn/release,
   synced signed intents, pending-operation exclusion, backing checks and recorded
