@@ -283,7 +283,20 @@ func (s *AuxPoWStratumServer) ListenAndServe(ctx context.Context) error {
 		candidate := NewBlock(1, GenesisBlock().Hash, []Transaction{}, s.DefaultMiner)
 		candidate.Timestamp = time.Now().Unix()
 		candidate.Reward = rewardAt(candidate.Timestamp)
-		if _, err := s.CreateNewJob(candidate, s.GoTargetBits, true); err != nil {
+		targetBits := s.GoTargetBits
+		if s.GoChainNodeURL != "" {
+			var blocks []*Block
+			if err := request(s.GoChainNodeURL, "/chain", nil, &blocks); err == nil && len(blocks) > 0 {
+				tip := blocks[len(blocks)-1]
+				candidate = NewBlock(tip.Index+1, tip.Hash, []Transaction{}, s.DefaultMiner)
+				candidate.Timestamp = time.Now().Unix()
+				candidate.Reward = rewardAt(candidate.Timestamp)
+				targetBits = ExpectedDifficulty(blocks, candidate.Index, DefaultGoAuxBits)
+				candidate.Bits = targetBits
+				s.GoTargetBits = targetBits
+			}
+		}
+		if _, err := s.CreateNewJob(candidate, targetBits, true); err != nil {
 			return err
 		}
 	}
@@ -583,8 +596,6 @@ func (s *AuxPoWStratumServer) handleSubmit(session *StratumSession, req *Stratum
 
 	// 5. Check if Share Meets GoChain Difficulty Target!
 	if parentHashInt.Cmp(goTarget) <= 0 {
-		atomic.AddUint64(&s.MinedBlocks, 1)
-
 		auxpow := &AuxPoW{
 			ParentHeader:   btcHeader,
 			CoinbaseTxHex:  hex.EncodeToString(coinbase),
@@ -615,13 +626,11 @@ func (s *AuxPoWStratumServer) handleSubmit(session *StratumSession, req *Stratum
 		}
 
 		log.Printf("\n" + strings.Repeat("=", 64))
-		log.Printf("[AUXPOW] 🎉🎉🎉 BITAXE MINED GOCHAIN BLOCK #%d! 🎉🎉🎉", auxBlock.Index)
+		log.Printf("[AUXPOW] 🎉 BITAXE SOLUTION FOUND FOR GOCHAIN BLOCK #%d! 🎉", auxBlock.Index)
 		log.Printf("[AUXPOW] Bitcoin Parent Nonce: 0x%08x | Hash: %s", btcHeader.Nonce, parentHashHex)
 		log.Printf("[AUXPOW] GoChain Target Met! Compact Bits: 0x%08x", job.GoTargetBits)
 		log.Printf("[AUXPOW] Reward: %d atoms (~10 GO) -> %s", auxBlock.Reward, auxBlock.Miner)
 		log.Printf(strings.Repeat("=", 64) + "\n")
-
-		s.recordMinedBlock(auxBlock, btcHeader.Nonce, parentHashHex)
 
 		if s.OnBlockMined != nil {
 			s.OnBlockMined(auxBlock)
@@ -629,12 +638,15 @@ func (s *AuxPoWStratumServer) handleSubmit(session *StratumSession, req *Stratum
 
 		// Submit to GoChain node if configured
 		if s.GoChainNodeURL != "" {
-			go s.submitBlockToNode(auxBlock)
+			go s.submitBlockToNode(auxBlock, btcHeader.Nonce, parentHashHex)
+		} else {
+			atomic.AddUint64(&s.MinedBlocks, 1)
+			s.recordMinedBlock(auxBlock, btcHeader.Nonce, parentHashHex)
 		}
 	}
 }
 
-func (s *AuxPoWStratumServer) submitBlockToNode(auxBlock *AuxBlock) {
+func (s *AuxPoWStratumServer) submitBlockToNode(auxBlock *AuxBlock, parentNonce uint32, parentHash string) {
 	// Post block to GoChain RPC
 	payload, err := json.Marshal(auxBlock.Block)
 	if err != nil {
@@ -648,6 +660,30 @@ func (s *AuxPoWStratumServer) submitBlockToNode(auxBlock *AuxBlock) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	log.Printf("[STRATUM] Node response: %s (%s)", resp.Status, string(body))
+
+	if resp.StatusCode == http.StatusOK {
+		atomic.AddUint64(&s.MinedBlocks, 1)
+		s.recordMinedBlock(auxBlock, parentNonce, parentHash)
+		log.Printf("[AUXPOW] ✅ GoChain Node ADOPTED Block #%d! (Nonce: 0x%08x)", auxBlock.Index, parentNonce)
+
+		// Immediately query updated chain and broadcast new job with consensus-expected bits
+		var blocks []*Block
+		if err := request(s.GoChainNodeURL, "/chain", nil, &blocks); err == nil && len(blocks) > 0 {
+			tip := blocks[len(blocks)-1]
+			candidate := NewBlock(tip.Index+1, tip.Hash, []Transaction{}, s.DefaultMiner)
+			candidate.Timestamp = time.Now().Unix()
+			candidate.Reward = rewardAt(candidate.Timestamp)
+			expectedBits := ExpectedDifficulty(blocks, candidate.Index, DefaultGoAuxBits)
+			candidate.Bits = expectedBits
+			job, err := s.CreateNewJob(candidate, expectedBits, true)
+			if err == nil {
+				s.GoTargetBits = expectedBits
+				s.BroadcastJob(job)
+				log.Printf("[STRATUM] 🔄 New Work Template Broadcast: Block #%d (Target Bits: 0x%08x)",
+					candidate.Index, expectedBits)
+			}
+		}
+	}
 }
 
 func runStratum(args []string) error {
@@ -706,11 +742,14 @@ func runStratum(args []string) error {
 						candidate := NewBlock(tip.Index+1, tip.Hash, []Transaction{}, defaultMiner)
 						candidate.Timestamp = time.Now().Unix()
 						candidate.Reward = rewardAt(candidate.Timestamp)
-						job, err := srv.CreateNewJob(candidate, uint32(*bits), true)
+						expectedBits := ExpectedDifficulty(blocks, candidate.Index, DefaultGoAuxBits)
+						candidate.Bits = expectedBits
+						job, err := srv.CreateNewJob(candidate, expectedBits, true)
 						if err == nil {
+							srv.GoTargetBits = expectedBits
 							srv.BroadcastJob(job)
-							log.Printf("[STRATUM] 🔄 New Work Template: GoChain Block #%d (Parent Tip: %s...)",
-								candidate.Index, tip.Hash[:8])
+							log.Printf("[STRATUM] 🔄 New Work Template: GoChain Block #%d (Parent Tip: %s..., Target Bits: 0x%08x)",
+								candidate.Index, tip.Hash[:8], expectedBits)
 						}
 					}
 				}
