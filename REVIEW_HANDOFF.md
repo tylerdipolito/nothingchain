@@ -6,6 +6,24 @@ Original baseline: abd9a86af75162e3dd3efc1e70d114e67261c576
 
 ## October 15 review follow-up (local working tree)
 
+- Solana UI now supports encrypted local-wallet downloads, optional encrypted
+  browser storage, reload/unlock and file restoration. Browser QA on an isolated
+  validator proved the same address/balances after reload, wrong-password refusal,
+  download restoration, and a confirmed swap signed by the restored wallet.
+  Browser backups for a different wallet are not silently overwritten. This
+  feature is localnet-only and does not make session keys production-safe.
+- Start-GoPools.ps1 was exercised with both test services stopped: it resumed
+  the existing isolated ledger and started Vite, then passed a repeat health
+  check without replacing processes. It never resets or initializes a ledger.
+- Solana integration now submits an actual failing deposit with preflight
+  bypassed, verifies logs show successful first token CPI then failed second
+  token CPI, and proves token balances/reserves/LP supply rolled back. The test
+  network fee is still charged. The full integration suite passed on isolated
+  RPC 8997, not the user's active pool.
+- npm audit still reports 12 inherited advisories (7 moderate, 5 high); no forced
+  downgrade was applied. This remains a local/testnet release, not approval to
+  accept externally valuable assets or deploy publicly with the faucet enabled.
+
 - Added the opt-in `checkpoint` build and CHECKPOINTS.md: a separate chain/signing
   domain, signed hash/time anchors, explicit operator public-key pinning, 24-hour
   expiry and halving-boundary freeze. Legacy builds stay unchanged. Test the

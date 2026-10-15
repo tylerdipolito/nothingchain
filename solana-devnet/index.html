@@ -333,9 +333,12 @@
             ><button class="text-button full" id="disconnect" hidden>
               Disconnect wallet
             </button>
-            <p class="subtle">
-              Private keys never go to the web server. Session-wallet keys exist
-              only in this tab.
+            <button class="text-button full" id="saveWallet" disabled>
+              Save encrypted wallet backup
+            </button>
+            <p class="subtle" id="walletPersistence">
+              Local test keys stay in this tab until you save an encrypted
+              backup. No private keys are sent to the web server.
             </p>
           </article>
           <article class="activity-card">
@@ -397,13 +400,77 @@
         <span>◈</span>
         <div>
           <strong>Try a local session wallet</strong
-          ><small>Temporary key · disappears on reload · localnet only</small>
+          ><small>Localnet only · save an encrypted backup to keep it</small>
+        </div>
+        <span>→</span>
+      </button>
+      <button class="wallet-choice" id="unlockWallet">
+        <span>◇</span>
+        <div>
+          <strong>Unlock saved wallet</strong
+          ><small>Restore encrypted browser backup with your password</small>
+        </div>
+        <span>→</span>
+      </button>
+      <button class="wallet-choice" id="restoreWallet">
+        <span>↥</span>
+        <div>
+          <strong>Restore backup</strong
+          ><small>Use a downloaded encrypted local-wallet file</small>
         </div>
         <span>→</span>
       </button>
       <p class="subtle">
         Never import a seed phrase here. This is a test-token application.
       </p>
+    </dialog>
+    <dialog id="backupDialog" aria-labelledby="backupTitle">
+      <div class="dialog-head">
+        <h2 id="backupTitle">Save local wallet</h2>
+        <button
+          class="icon-button"
+          id="closeBackup"
+          aria-label="Close wallet backup"
+        >
+          ×
+        </button>
+      </div>
+      <p class="subtle">
+        Local test tokens only. Keep your backup file and password. Encryption
+        protects the saved file, not an unlocked wallet on a compromised page.
+        Never paste a seed phrase here.
+      </p>
+      <label class="backup-field"
+        >Backup password<input
+          id="backupPassword"
+          type="password"
+          autocomplete="off"
+          minlength="12"
+          maxlength="256"
+      /></label>
+      <label class="backup-field" id="backupConfirmationRow"
+        >Confirm password<input
+          id="backupConfirmation"
+          type="password"
+          autocomplete="off"
+          maxlength="256"
+      /></label>
+      <label class="backup-field" id="backupFileRow" hidden
+        >Encrypted backup JSON<textarea
+          id="backupInput"
+          rows="5"
+          maxlength="4096"
+          spellcheck="false"
+        ></textarea>
+      </label>
+      <label class="subtle" id="backupRememberRow"
+        ><input type="checkbox" id="backupRemember" checked /> Remember
+        encrypted backup in this browser</label
+      >
+      <p class="backup-error" id="backupError" role="alert"></p>
+      <button class="button primary full" id="backupSubmit">
+        Encrypt and save
+      </button>
     </dialog>
     <dialog id="approval">
       <div class="dialog-head">

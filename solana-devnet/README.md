@@ -30,6 +30,58 @@ its own keys/program ID; private keys are deliberately excluded from Git.
 
 ## Try the app
 
+### Windows launcher (existing deployment)
+
+From the repository root:
+
+```powershell
+.\scripts\Start-GoPools.ps1 -CheckOnly
+.\scripts\Start-GoPools.ps1
+```
+
+The launcher reads the configured loopback RPC port, verifies local RPC health, rejects known public-cluster genesis
+identities, checks the configured program/pool/token accounts, and reuses the UI
+if it already serves this deployment. Otherwise it starts the installed Vite
+server on loopback with logs under `.local/`. It never initializes, deploys,
+resets, kills, or replaces a ledger. `-NoBrowser` skips opening the browser.
+`-Port 5175` selects a different UI port; `-CheckOnly` checks both RPC/accounts
+and that the UI serves the expected deployment, without launching services.
+
+If the validator is stopped, explicitly identify its existing WSL ledger:
+
+```powershell
+.\scripts\Start-GoPools.ps1 -StartValidator -ValidatorLedger /home/YOUR_USER/path/to/existing-ledger
+```
+
+The path must contain the existing `genesis.bin`; do not substitute a fresh
+directory. Ubuntu WSL must have `solana-test-validator` on its login-shell PATH.
+First-time setup still follows the build/deploy instructions below. Both reuse
+and startup from stopped validator/UI services were verified on an isolated
+ledger (RPC 8997/UI 5175), preserving its genesis, deployed accounts and balances.
+The launcher assigns gossip/dynamic ports from RPC+20 through RPC+50 and faucet
+RPC+10; conflicting ports fail rather than stopping another process.
+
+### Persistent local test wallets
+
+`src/wallet-backup.ts` implements a versioned, localnet-only encrypted backup
+format using Web Crypto PBKDF2-SHA256 (600,000 iterations) and AES-256-GCM.
+The local genesis identity and wallet address are authenticated. Tests cover
+restoration, randomization, wrong passwords, tampering, and different ledgers.
+Choose a local session wallet, then **Save encrypted wallet backup**. Enter and
+confirm a password of at least 12 characters. Keep the downloaded encrypted JSON
+file and password. Optionally remember its ciphertext in this browser. After a
+reload, choose **Connect wallet → Unlock saved wallet**, or choose **Restore
+backup** and paste the encrypted file contents. Never paste a seed phrase.
+Disconnect drops the unlocked key but retains any encrypted browser backup.
+Saving another wallet does not overwrite a different wallet's browser backup;
+use its downloaded file instead. Each origin/port has separate browser storage.
+
+No plaintext keys or passwords are written to storage by this module. A backup does not
+restore a lost validator ledger and cannot protect an already-compromised page.
+Browser QA verified a download, wrong-password rejection, reload/unlock to the
+same address and balances, restoration from the downloaded file, and a confirmed
+swap signed by the restored wallet. All tests used isolated local test assets.
+
 Open http://127.0.0.1:5174/ while the app server and local validator are running.
 
 1. Connect wallet → Try a local session wallet.
@@ -37,8 +89,9 @@ Open http://127.0.0.1:5174/ while the app server and local validator are running
 3. Get quote → Review swap → approve the test transaction.
 4. My liquidity → preview and approve a deposit or withdrawal.
 
-The session wallet signs inside the browser. Its key is memory-only and vanishes
-on reload/disconnect; it is localnet-only. For persistent devnet use, connect an
+The unlocked local wallet signs inside the browser. Its in-memory key vanishes
+on reload/disconnect; restore a saved encrypted backup to regain access. Without
+a backup, it remains temporary. This wallet feature is localnet-only. For devnet, connect an
 installed Phantom or Solflare wallet and fund it with DEVNET SOL. Never import a
 seed phrase here. Extension connection/signing paths are implemented but require
 an installed wallet and user approval; browser QA used the local session wallet.

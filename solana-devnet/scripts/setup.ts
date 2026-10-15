@@ -25,7 +25,7 @@ const network = process.argv.includes("--localnet") ? "localnet" : "devnet";
 const rpc =
   network === "devnet"
     ? "https://api.devnet.solana.com"
-    : "http://127.0.0.1:8897";
+    : process.env.GO_POOLS_LOCAL_RPC || "http://127.0.0.1:8897";
 const c = new Connection(rpc, {
   commitment: "confirmed",
   disableRetryOnRateLimit: true,

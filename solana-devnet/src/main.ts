@@ -7,6 +7,7 @@ import {
 } from "@solana/web3.js";
 import { Deployment, Wallet, keyWallet } from "./solana";
 import { Market, SwapQuote, DepositQuote, formatUnits } from "./market";
+import { encryptLocalWallet, decryptLocalWallet } from "./wallet-backup";
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => {
   const e = document.getElementById(id);
   if (!e) throw Error("Missing " + id);
@@ -18,6 +19,21 @@ const text = (id: string, value: string) => {
 let deployment: Deployment;
 let market: Market;
 let wallet: Wallet | null = null;
+let localKey: Keypair | null = null;
+let localGenesis = "";
+let backupMode: "save" | "unlock" | "restore" = "save";
+const backupSlot = () => "go-pools.encrypted-wallet.v1." + localGenesis;
+function rememberBackup(encrypted: string, address: string): string {
+  try {
+    const existing = localStorage.getItem(backupSlot());
+    if (existing && JSON.parse(existing).address !== address)
+      return " Another wallet's browser backup was preserved. Use this wallet's downloaded file to restore it.";
+    localStorage.setItem(backupSlot(), encrypted);
+    return "";
+  } catch {
+    return " Browser storage was unavailable; keep and restore the downloaded file.";
+  }
+}
 let busy = false,
   refreshing = false;
 let inputSymbol = "testUSD";
@@ -114,6 +130,7 @@ async function perform(fn: () => Promise<void>) {
       .forEach((b) => (b.disabled = false));
     $("fund").toggleAttribute("disabled", !wallet);
     $("copy").toggleAttribute("disabled", !wallet);
+    $("saveWallet").toggleAttribute("disabled", !localKey);
     await refresh();
   }
 }
@@ -137,10 +154,12 @@ function requestApproval(): Promise<void> {
     dialog.showModal();
   });
 }
-async function setWallet(w: Wallet, name: string) {
+async function setWallet(w: Wallet, name: string, key: Keypair | null = null) {
+  const nextMarket = new Market(deployment, w);
+  await nextMarket.check();
   wallet = w;
-  market = new Market(deployment, w);
-  await market.check();
+  market = nextMarket;
+  localKey = key;
   text("walletName", name);
   text("walletAddress", shortened(w.publicKey.toBase58()));
   $("walletAddress").title = w.publicKey.toBase58();
@@ -148,6 +167,13 @@ async function setWallet(w: Wallet, name: string) {
   $("disconnect").hidden = false;
   $("copy").removeAttribute("disabled");
   $("fund").removeAttribute("disabled");
+  $("saveWallet").toggleAttribute("disabled", !localKey);
+  text(
+    "walletPersistence",
+    key
+      ? "Local test wallet: save an encrypted backup before closing this tab."
+      : "Your extension manages wallet persistence and approvals.",
+  );
   invalidate();
   invalidateDeposit();
   invalidateWithdraw();
@@ -218,27 +244,130 @@ $("session").onclick = () =>
       throw Error(
         "Session wallets are only enabled for the local validator. Use a devnet-configured wallet for devnet.",
       );
-    const key = Keypair.generate();
-    const signer = keyWallet(key);
-    const w: Wallet = {
-      publicKey: key.publicKey,
-      async signTransaction<T extends Transaction | VersionedTransaction>(
-        tx: T,
-      ) {
-        await requestApproval();
-        return signer.signTransaction(tx);
-      },
-      async signAllTransactions<T extends Transaction | VersionedTransaction>(
-        txs: T[],
-      ) {
-        await requestApproval();
-        return signer.signAllTransactions(txs);
-      },
-    };
-    await setWallet(w, "Local session wallet");
+    await connectLocalKey(Keypair.generate());
   });
+async function connectLocalKey(key: Keypair) {
+  if (deployment.network !== "localnet")
+    throw Error("Local wallets are only supported on localnet.");
+  const signer = keyWallet(key);
+  const w: Wallet = {
+    publicKey: key.publicKey,
+    async signTransaction<T extends Transaction | VersionedTransaction>(tx: T) {
+      await requestApproval();
+      return signer.signTransaction(tx);
+    },
+    async signAllTransactions<T extends Transaction | VersionedTransaction>(
+      txs: T[],
+    ) {
+      await requestApproval();
+      return signer.signAllTransactions(txs);
+    },
+  };
+  await setWallet(w, "Local test wallet", key);
+}
+function openBackup(mode: typeof backupMode) {
+  if (deployment.network !== "localnet")
+    throw Error("Local wallet backups are localnet-only.");
+  backupMode = mode;
+  text(
+    "backupTitle",
+    mode === "save"
+      ? "Save local wallet"
+      : mode === "unlock"
+        ? "Unlock saved wallet"
+        : "Restore encrypted backup",
+  );
+  $("backupConfirmationRow").hidden = mode !== "save";
+  $("backupFileRow").hidden = mode !== "restore";
+  $("backupRememberRow").hidden = mode === "unlock";
+  text("backupSubmit", mode === "save" ? "Encrypt and save" : "Unlock wallet");
+  text("backupError", "");
+  $<HTMLDialogElement>("walletDialog").close();
+  $<HTMLDialogElement>("backupDialog").showModal();
+}
+$("saveWallet").onclick = () => openBackup("save");
+$("unlockWallet").onclick = () => openBackup("unlock");
+$("restoreWallet").onclick = () => openBackup("restore");
+const clearBackupSecrets = () => {
+  for (const id of ["backupPassword", "backupConfirmation", "backupInput"])
+    $<HTMLInputElement>(id).value = "";
+};
+$("closeBackup").onclick = () => $<HTMLDialogElement>("backupDialog").close();
+$("backupDialog").addEventListener("close", clearBackupSecrets);
+$("backupDialog").addEventListener("cancel", (event) => {
+  if (busy) event.preventDefault();
+});
+$("backupSubmit").onclick = async () => {
+  if (busy) return;
+  const button = $<HTMLButtonElement>("backupSubmit");
+  button.disabled = true;
+  $<HTMLButtonElement>("closeBackup").disabled = true;
+  busy = true;
+  try {
+    text("backupError", "");
+    const password = $<HTMLInputElement>("backupPassword").value;
+    if (backupMode === "save") {
+      const key = localKey;
+      if (!key) throw Error("Connect a local test wallet first.");
+      if (password !== $<HTMLInputElement>("backupConfirmation").value)
+        throw Error("Passwords do not match.");
+      const encrypted = await encryptLocalWallet(key, password, localGenesis);
+      let storageWarning = "";
+      if ($<HTMLInputElement>("backupRemember").checked) {
+        storageWarning = rememberBackup(encrypted, key.publicKey.toBase58());
+      }
+      const url = URL.createObjectURL(
+        new Blob([encrypted], { type: "application/json" }),
+      );
+      const link = document.createElement("a");
+      link.href = url;
+      link.download =
+        "go-pools-" + key.publicKey.toBase58() + ".encrypted.json";
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+      text(
+        "walletPersistence",
+        "Encrypted backup created. Keep the file and password; check that the download completed. Only ciphertext can be remembered in this browser." +
+          storageWarning,
+      );
+    } else {
+      const encrypted =
+        backupMode === "unlock"
+          ? localStorage.getItem(backupSlot())
+          : $<HTMLTextAreaElement>("backupInput").value;
+      if (!encrypted)
+        throw Error(
+          "No encrypted backup found. Choose Restore backup to paste your saved file.",
+        );
+      const key = await decryptLocalWallet(encrypted, password, localGenesis);
+      await connectLocalKey(key);
+      let storageWarning = "";
+      if (
+        backupMode === "restore" &&
+        $<HTMLInputElement>("backupRemember").checked
+      ) {
+        storageWarning = rememberBackup(encrypted, key.publicKey.toBase58());
+      }
+      text(
+        "walletPersistence",
+        "Restored local wallet. Keep the encrypted file and password to reconnect after reload." +
+          storageWarning,
+      );
+    }
+    $<HTMLDialogElement>("backupDialog").close();
+    await refresh();
+  } catch (e) {
+    text("backupError", e instanceof Error ? e.message : String(e));
+  } finally {
+    clearBackupSecrets();
+    busy = false;
+    button.disabled = false;
+    $<HTMLButtonElement>("closeBackup").disabled = false;
+  }
+};
 $("disconnect").onclick = () => {
   wallet = null;
+  localKey = null;
   market = new Market(deployment, {
     publicKey: Keypair.generate().publicKey,
     async signTransaction() {
@@ -263,6 +392,11 @@ $("disconnect").onclick = () => {
   $("fund").setAttribute("disabled", "");
   $("copy").setAttribute("disabled", "");
   $("disconnect").hidden = true;
+  $("saveWallet").setAttribute("disabled", "");
+  text(
+    "walletPersistence",
+    "Disconnected. An encrypted browser backup, if saved, remains available under Connect wallet → Unlock saved wallet.",
+  );
   invalidate();
   invalidateDeposit();
   invalidateWithdraw();
@@ -422,6 +556,7 @@ async function start() {
       },
     });
     await market.check();
+    localGenesis = await market.connection.getGenesisHash();
     text(
       "network",
       deployment.network === "devnet" ? "Solana devnet" : "Solana localnet",
@@ -430,10 +565,12 @@ async function start() {
       "networkNote",
       deployment.network === "devnet"
         ? "Solana devnet · test tokens only · separate from mined GoChain GO"
-        : "Local Solana validator · real program execution with test tokens · devnet funding pending",
+        : "Local Solana validator · Demo GO and testUSD only · separate from mined GoChain GO · no bridge",
     );
     $<HTMLAnchorElement>("programLink").href = explorer(deployment.program);
     $("session").hidden = deployment.network !== "localnet";
+    $("unlockWallet").hidden = deployment.network !== "localnet";
+    $("restoreWallet").hidden = deployment.network !== "localnet";
     const fields = [
       ["Program", deployment.program],
       ["Pool", deployment.pool],

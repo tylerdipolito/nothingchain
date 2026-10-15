@@ -33,6 +33,9 @@ export default defineConfig({
     {
       name: "local-test-faucet",
       configureServer(server) {
+        if (server.config.server.host !== "127.0.0.1")
+          throw Error("The test faucet server must bind to 127.0.0.1.");
+        const localHost = `127.0.0.1:${server.config.server.port}`;
         let busy = false;
         const requested = new Set<string>();
         server.middlewares.use("/api/fund", async (req, res) => {
@@ -42,8 +45,8 @@ export default defineConfig({
           try {
             if (
               req.method !== "POST" ||
-              req.headers.origin !== "http://127.0.0.1:5174" ||
-              req.headers.host !== "127.0.0.1:5174"
+              req.headers.origin !== `http://${localHost}` ||
+              req.headers.host !== localHost
             )
               throw Error("Use the local app to request test tokens.");
             if (busy) throw Error("Faucet is busy. Try again.");

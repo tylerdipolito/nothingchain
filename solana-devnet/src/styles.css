@@ -1243,3 +1243,27 @@ dialog::backdrop {
     transition: none !important;
   }
 }
+.backup-field {
+  display: grid;
+  gap: 8px;
+  margin: 16px 0;
+  font-size: 13px;
+}
+.backup-field input,
+.backup-field textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px;
+  border-radius: 8px;
+  background: #111b2b;
+  border: 1px solid #384359;
+  color: #f4f6ff;
+  font: inherit;
+}
+.backup-field[hidden] {
+  display: none;
+}
+.backup-error {
+  color: #ffb8b8;
+  font-size: 13px;
+}

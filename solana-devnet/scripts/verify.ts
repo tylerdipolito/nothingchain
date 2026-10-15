@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import BN from "bn.js";
 import { readFile, writeFile } from "node:fs/promises";
-import { Connection, Keypair, PublicKey } from "@solana/web3.js";
+import { Connection, Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import {
   getMint,
   getOrCreateAssociatedTokenAccount,
   mintTo,
   transfer,
+  TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
 import { Market, formatUnits, outputFor, parseUnits } from "../src/market";
 import { Deployment, keyWallet, PROGRAM } from "../src/solana";
@@ -149,6 +150,93 @@ await rejected(
       .rpc(),
   "Substitute wrong vault",
 );
+// Submit a real failing transaction, bypassing preflight: transfer A succeeds
+// inside execution, transfer B fails, and Solana must roll back all token state.
+const atomicUser = Keypair.generate();
+const atomic = new Market(d, keyWallet(atomicUser));
+const fundSig = await c.requestAirdrop(atomicUser.publicKey, 1000000000);
+await c.confirmTransaction(fundSig, "confirmed");
+for (const mintAddress of [d.mintA, d.mintB, d.lpMint]) {
+  await getOrCreateAssociatedTokenAccount(
+    c,
+    payer,
+    new PublicKey(mintAddress),
+    atomicUser.publicKey,
+  );
+}
+await mintTo(
+  c,
+  payer,
+  new PublicKey(d.mintA),
+  atomic.accounts().userA,
+  payer,
+  1000000n,
+);
+const atomicReservesBefore = await atomic.reserves();
+const atomicBalancesBefore = await atomic.snapshot();
+const latest = await c.getLatestBlockhash("confirmed");
+const failInstruction = await atomic.program.methods
+  .deposit(
+    new BN(1000000),
+    new BN("1000000000000"),
+    new BN(1),
+    new BN((await c.getSlot("confirmed")) + 150),
+  )
+  .accountsStrict(atomic.liquidityAccounts())
+  .instruction();
+const failingTx = new Transaction({
+  ...latest,
+  feePayer: atomicUser.publicKey,
+}).add(failInstruction);
+failingTx.sign(atomicUser);
+const failingSig = await c.sendRawTransaction(failingTx.serialize(), {
+  skipPreflight: true,
+  maxRetries: 0,
+});
+const failedConfirmation = await c.confirmTransaction(
+  { ...latest, signature: failingSig },
+  "confirmed",
+);
+assert(
+  failedConfirmation.value.err,
+  "second token transfer must fail on chain",
+);
+let failedExecution = await c.getTransaction(failingSig, {
+  commitment: "confirmed",
+  maxSupportedTransactionVersion: 0,
+});
+for (let attempt = 0; !failedExecution && attempt < 8; attempt++) {
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  failedExecution = await c.getTransaction(failingSig, {
+    commitment: "confirmed",
+    maxSupportedTransactionVersion: 0,
+  });
+}
+assert(
+  failedExecution?.meta?.err,
+  "failed execution metadata must be available",
+);
+const logs = failedExecution.meta.logMessages || [];
+const tokenSuccess = logs.indexOf(`Program ${TOKEN_PROGRAM_ID} success`);
+const tokenFailure = logs.findIndex((line) =>
+  line.startsWith(`Program ${TOKEN_PROGRAM_ID} failed:`),
+);
+assert(
+  tokenSuccess >= 0 && tokenFailure > tokenSuccess,
+  "first token CPI succeeds before second token CPI fails",
+);
+assert.deepEqual(await atomic.reserves(), atomicReservesBefore);
+const atomicBalancesAfter = await atomic.snapshot();
+assert.equal(atomicBalancesAfter.go, atomicBalancesBefore.go);
+assert.equal(atomicBalancesAfter.usd, atomicBalancesBefore.usd);
+assert.equal(atomicBalancesAfter.lp, atomicBalancesBefore.lp);
+records.push({
+  test: "On-chain second-transfer failure rolls back first transfer",
+  signature: failingSig,
+  result:
+    "Both wallet tokens, reserves and LP supply unchanged; network fee still charged",
+});
+
 // A direct donation changes reserves but does not mint LP shares.
 const supplyBefore = (await getMint(c, new PublicKey(d.lpMint))).supply;
 const source = (
