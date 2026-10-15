@@ -53,6 +53,8 @@ func run(args []string) error {
 		return runAMM(args[1:])
 	case "stratum":
 		return runStratum(args[1:])
+	case "merged-stratum":
+		return runMergedStratum(args[1:])
 	case "wallet":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: gochain wallet create|address [--file PATH]")
@@ -467,6 +469,7 @@ func usage() {
   gochain mine [--miner ADDRESS] [--offline]
   gochain send --to ADDRESS --amount 1 [--wallet PATH] [--memo TEXT]
   gochain stratum --port 3333 [--diff 16] [--node http://127.0.0.1:8086]
+  gochain merged-stratum --port 3335 [--dash 3336] [--btc-bits BITS] [--node http://127.0.0.1:8092]
   gochain balance ADDRESS
   gochain stats | chain | validate
 
