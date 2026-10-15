@@ -398,6 +398,14 @@ func (s *AuxPoWStratumServer) handleRPCRequest(session *StratumSession, req *Str
 			_ = session.Enc.Encode(StratumRPCResponse{ID: req.ID, Result: true, Error: nil})
 		}
 
+	case "mining.configure":
+		// BIP-310 version-rolling negotiation
+		res := map[string]any{
+			"version-rolling":      true,
+			"version-rolling.mask": "1fffe000",
+		}
+		_ = session.Enc.Encode(StratumRPCResponse{ID: req.ID, Result: res, Error: nil})
+
 	case "mining.submit":
 		s.handleSubmit(session, req)
 
@@ -420,6 +428,12 @@ func (s *AuxPoWStratumServer) handleSubmit(session *StratumSession, req *Stratum
 	extranonce2Hex := params[2]
 	ntimeHex := params[3]
 	nonceHex := params[4]
+	var vBitsLog string
+	if len(params) > 5 {
+		vBitsLog = params[5]
+	}
+	log.Printf("[DEBUG SUBMIT] jobID=%s, extranonce2=%s, ntime=%s, nonce=%s, vBits=%s (total params: %d)",
+		jobID, extranonce2Hex, ntimeHex, nonceHex, vBitsLog, len(params))
 
 	s.mu.RLock()
 	job, exists := s.jobHistory[jobID]
@@ -427,6 +441,7 @@ func (s *AuxPoWStratumServer) handleSubmit(session *StratumSession, req *Stratum
 
 	if !exists {
 		atomic.AddUint64(&s.RejectedShares, 1)
+		log.Printf("[STRATUM] ❌ Reject: Job '%s' not found (known jobs: %d)", jobID, len(s.jobHistory))
 		_ = session.Enc.Encode(StratumRPCResponse{ID: req.ID, Result: false, Error: []any{21, "Job not found or stale", nil}})
 		return
 	}
@@ -435,6 +450,8 @@ func (s *AuxPoWStratumServer) handleSubmit(session *StratumSession, req *Stratum
 	extranonce1Bytes, _ := hex.DecodeString(session.Extranonce1)
 	extranonce2Bytes, err := hex.DecodeString(extranonce2Hex)
 	if err != nil || len(extranonce2Bytes) != session.Extranonce2Len {
+		atomic.AddUint64(&s.RejectedShares, 1)
+		log.Printf("[STRATUM] ❌ Reject: Invalid extranonce2 '%s' (len %d, expected %d)", extranonce2Hex, len(extranonce2Bytes), session.Extranonce2Len)
 		_ = session.Enc.Encode(StratumRPCResponse{ID: req.ID, Result: false, Error: []any{20, "Invalid extranonce2", nil}})
 		return
 	}
@@ -445,6 +462,7 @@ func (s *AuxPoWStratumServer) handleSubmit(session *StratumSession, req *Stratum
 	if s.submittedShares[shareKey] {
 		s.mu.Unlock()
 		atomic.AddUint64(&s.RejectedShares, 1)
+		log.Printf("[STRATUM] ❌ Reject: Duplicate share %s", shareKey)
 		_ = session.Enc.Encode(StratumRPCResponse{ID: req.ID, Result: false, Error: []any{22, "Duplicate share", nil}})
 		return
 	}
@@ -470,6 +488,8 @@ func (s *AuxPoWStratumServer) handleSubmit(session *StratumSession, req *Stratum
 	// 2. Parse ntime and nonce
 	ntimeBytes, err := hex.DecodeString(ntimeHex)
 	if err != nil || len(ntimeBytes) != 4 {
+		atomic.AddUint64(&s.RejectedShares, 1)
+		log.Printf("[STRATUM] ❌ Reject: Invalid ntime '%s'", ntimeHex)
 		_ = session.Enc.Encode(StratumRPCResponse{ID: req.ID, Result: false, Error: []any{20, "Invalid ntime", nil}})
 		return
 	}
@@ -477,35 +497,80 @@ func (s *AuxPoWStratumServer) handleSubmit(session *StratumSession, req *Stratum
 
 	nonceBytes, err := hex.DecodeString(nonceHex)
 	if err != nil || len(nonceBytes) != 4 {
+		atomic.AddUint64(&s.RejectedShares, 1)
+		log.Printf("[STRATUM] ❌ Reject: Invalid nonce '%s'", nonceHex)
 		_ = session.Enc.Encode(StratumRPCResponse{ID: req.ID, Result: false, Error: []any{20, "Invalid nonce", nil}})
 		return
 	}
 	nonceVal := binary.BigEndian.Uint32(nonceBytes)
 
-	// 3. Assemble 80-byte Bitcoin Header
-	btcHeader := BitcoinHeader{
-		Version:    int32(job.Version),
-		PrevBlock:  job.BtcPrevHash,
-		MerkleRoot: merkleRootHex,
-		Timestamp:  ntimeVal,
-		Bits:       job.Bits,
-		Nonce:      nonceVal,
+	// 3. Assemble 80-byte Bitcoin Header with BIP-310 / AsicBoost resolution
+	const bip320Mask uint32 = 0x1fffe000
+	candidateVersions := []int32{int32(job.Version)}
+
+	if len(params) > 5 && len(params[5]) > 0 {
+		if vBits, err := hex.DecodeString(params[5]); err == nil && len(vBits) == 4 {
+			beVal := binary.BigEndian.Uint32(vBits)
+			leVal := binary.LittleEndian.Uint32(vBits)
+			candidateVersions = append(candidateVersions,
+				int32((job.Version & ^bip320Mask)|(beVal&bip320Mask)),
+				int32(beVal),
+				int32((job.Version & ^bip320Mask)|(leVal&bip320Mask)),
+				int32(leVal),
+			)
+		}
 	}
 
-	parentHashHex, err := btcHeader.Hash()
-	if err != nil {
-		_ = session.Enc.Encode(StratumRPCResponse{ID: req.ID, Result: false, Error: []any{20, "Failed to hash header", nil}})
-		return
+	// Fallback: check the 16 hardware AsicBoost version masks (bits 13..16)
+	for i := uint32(0); i < 16; i++ {
+		candidateVersions = append(candidateVersions, int32(job.Version|(i<<13)))
 	}
 
-	parentHashBytes, _ := hex.DecodeString(parentHashHex)
-	parentHashInt := new(big.Int).SetBytes(parentHashBytes)
-
-	// 4. Verify against Share Difficulty Target (or GoChain target)
 	shareTarget := DiffToTarget(session.Difficulty)
 	goTarget := BitsToTarget(job.GoTargetBits)
-	if parentHashInt.Cmp(shareTarget) > 0 && parentHashInt.Cmp(goTarget) > 0 {
+
+	var btcHeader BitcoinHeader
+	var parentHashHex string
+	var parentHashInt *big.Int
+	foundValid := false
+
+	for _, v := range candidateVersions {
+		h := BitcoinHeader{
+			Version:    v,
+			PrevBlock:  job.BtcPrevHash,
+			MerkleRoot: merkleRootHex,
+			Timestamp:  ntimeVal,
+			Bits:       job.Bits,
+			Nonce:      nonceVal,
+		}
+		phHex, err := h.Hash()
+		if err != nil {
+			continue
+		}
+		phBytes, _ := hex.DecodeString(phHex)
+		phInt := new(big.Int).SetBytes(phBytes)
+
+		if phInt.Cmp(shareTarget) <= 0 || phInt.Cmp(goTarget) <= 0 {
+			btcHeader = h
+			parentHashHex = phHex
+			parentHashInt = phInt
+			foundValid = true
+			break
+		}
+	}
+
+	if !foundValid {
+		btcHeader = BitcoinHeader{
+			Version:    int32(job.Version),
+			PrevBlock:  job.BtcPrevHash,
+			MerkleRoot: merkleRootHex,
+			Timestamp:  ntimeVal,
+			Bits:       job.Bits,
+			Nonce:      nonceVal,
+		}
+		parentHashHex, _ = btcHeader.Hash()
 		atomic.AddUint64(&s.RejectedShares, 1)
+		log.Printf("[STRATUM] ❌ Reject: Low diff from %s! Parent Hash: %s, ShareTarget: %064x", session.Worker, parentHashHex, shareTarget)
 		_ = session.Enc.Encode(StratumRPCResponse{ID: req.ID, Result: false, Error: []any{23, "Low difficulty share", nil}})
 		return
 	}
