@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -119,6 +120,62 @@ type MergedMiningServer struct {
 	OnBtcBlockMined func(btcBlock *SolvedBitcoinBlock)
 }
 
+// DecodeBech32 decodes a bech32 string (like bc1q...) into hrp, witness version, and program bytes.
+func DecodeBech32(s string) (string, byte, []byte, error) {
+	const charset = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+	s = strings.ToLower(s)
+	pos := strings.LastIndex(s, "1")
+	if pos < 1 || pos+7 > len(s) {
+		return "", 0, nil, fmt.Errorf("invalid bech32 separator position")
+	}
+	hrp := s[:pos]
+	dataPart := s[pos+1:]
+	values := make([]byte, len(dataPart))
+	for i, c := range dataPart {
+		idx := strings.IndexRune(charset, c)
+		if idx == -1 {
+			return "", 0, nil, fmt.Errorf("invalid bech32 character: %c", c)
+		}
+		values[i] = byte(idx)
+	}
+	if len(values) < 6 {
+		return "", 0, nil, fmt.Errorf("bech32 string too short")
+	}
+	payload := values[:len(values)-6]
+	if len(payload) < 1 {
+		return "", 0, nil, fmt.Errorf("empty bech32 payload")
+	}
+	version := payload[0]
+	var acc, bits uint32
+	var out []byte
+	for _, val := range payload[1:] {
+		acc = (acc << 5) | uint32(val)
+		bits += 5
+		for bits >= 8 {
+			bits -= 8
+			out = append(out, byte((acc>>bits)&0xff))
+		}
+	}
+	return hrp, version, out, nil
+}
+
+// BitcoinAddressToScript converts a Bitcoin address (Bech32 bc1q... or Legacy) to wire scriptPubKey with VarInt length prefix.
+func BitcoinAddressToScript(addr string) []byte {
+	if strings.HasPrefix(strings.ToLower(addr), "bc1q") {
+		_, ver, prog, err := DecodeBech32(addr)
+		if err == nil && len(prog) == 20 && ver == 0 {
+			script := []byte{0x00, 0x14}
+			script = append(script, prog...)
+			return append([]byte{byte(len(script))}, script...)
+		}
+	}
+	// Fallback P2PKH script: 0x19 76 a9 14 <20-byte-hash> 88 ac
+	h := sha256.Sum256([]byte(addr))
+	p2pkh := append([]byte{0x76, 0xa9, 0x14}, h[:20]...)
+	p2pkh = append(p2pkh, 0x88, 0xac)
+	return append([]byte{byte(len(p2pkh))}, p2pkh...)
+}
+
 // NewMergedMiningServer constructs a new True Merged Mining server instance.
 func NewMergedMiningServer(listenAddr, dashAddr, nodeURL, goMiner, btcMiner string, shareDiff float64, btcBits, goBits uint32) *MergedMiningServer {
 	if shareDiff <= 0 {
@@ -131,7 +188,7 @@ func NewMergedMiningServer(listenAddr, dashAddr, nodeURL, goMiner, btcMiner stri
 		goBits = DefaultGoAuxBits
 	}
 	if btcMiner == "" {
-		btcMiner = "bc1qbitaxemergedminer7849204829302194829"
+		btcMiner = "bc1qxl26let6yc2fn8n33he4fswzsyys83h8j00uyq"
 	}
 	if goMiner == "" {
 		goMiner = "go19c5446aa51196d4ef9e8036ec203e70333e178c1351baf7c12f96229077c2272"
@@ -230,10 +287,7 @@ func (s *MergedMiningServer) CreateNewMergedJob(candidate *Block, goBits uint32,
 	// Bitcoin Block Subsidy (3.125 BTC = 312,500,000 satoshis)
 	binary.Write(coinb2, binary.LittleEndian, uint64(s.btcState.BlockSubsidy))
 
-	// Standard 25-byte P2PKH script paying Bitcoin miner
-	// OP_DUP OP_HASH160 <20-byte-hash> OP_EQUALVERIFY OP_CHECKSIG
-	p2pkh := []byte("\x19\x76\xa9\x14\x42\x54\x43\x5f\x4d\x49\x4e\x45\x52\x5f\x50\x55\x42\x4b\x45\x59\x5f\x31\x88\xac")
-	coinb2.Write(p2pkh)
+	coinb2.Write(BitcoinAddressToScript(s.btcState.MinerAddress))
 	coinb2.Write([]byte{0x00, 0x00, 0x00, 0x00}) // LockTime
 
 	job := &MergedStratumJob{
@@ -961,7 +1015,7 @@ func runMergedStratum(args []string) error {
 	host := fs.String("host", "0.0.0.0", "listen interface (0.0.0.0 for LAN/Wi-Fi)")
 	node := fs.String("node", "http://127.0.0.1:8092", "GoChain node URL")
 	goMiner := fs.String("go-miner", "", "GoChain reward wallet address")
-	btcMiner := fs.String("btc-miner", "bc1qbitaxemergedminer7849204829302194829", "Bitcoin reward address")
+	btcMiner := fs.String("btc-miner", "bc1qxl26let6yc2fn8n33he4fswzsyys83h8j00uyq", "Bitcoin reward address")
 	btcBits := fs.Uint("btc-bits", uint(DefaultGoAuxBits), "Bitcoin difficulty target bits")
 	goBits := fs.Uint("go-bits", uint(DefaultGoAuxBits), "GoChain initial target bits")
 	diff := fs.Float64("diff", 16.0, "Stratum share difficulty for Bitaxe")
