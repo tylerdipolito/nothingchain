@@ -96,11 +96,11 @@ func validateStateAt(s chainState, includePending bool, now int64) (*ledger, err
 			if b.Hash != b.computeHash() {
 				return nil, fmt.Errorf("block %d: invalid aux block hash", i)
 			}
-			bits := b.Bits
-			if bits == 0 {
-				bits = DefaultGoAuxBits
+			expectedBits := ExpectedDifficulty(s.Blocks, i, DefaultGoAuxBits)
+			if b.Bits != 0 && b.Bits != expectedBits {
+				return nil, fmt.Errorf("block %d: difficulty spoofing rejected: got bits 0x%08x, expected 0x%08x", i, b.Bits, expectedBits)
 			}
-			if err := ValidateAuxPoW(b, b.AuxPoW, bits); err != nil {
+			if err := ValidateAuxPoW(b, b.AuxPoW, expectedBits); err != nil {
 				return nil, fmt.Errorf("block %d: invalid auxpow proof: %w", i, err)
 			}
 		} else {

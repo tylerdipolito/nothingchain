@@ -285,3 +285,47 @@ func RetargetDifficulty(currentBits uint32, actualTimespan int64, targetTimespan
 
 	return TargetToBits(newTarget)
 }
+
+const AuxPoWRetargetInterval = 10 // Retarget every 10 blocks
+
+// ExpectedDifficulty computes the required consensus bits for block at index height.
+// Prevents difficulty spoofing attacks where miners attempt to forge easier targets.
+func ExpectedDifficulty(blocks []*Block, height int, baseBits uint32) uint32 {
+	if baseBits == 0 {
+		baseBits = DefaultGoAuxBits
+	}
+	if height <= 0 || len(blocks) == 0 {
+		return baseBits
+	}
+	if height < AuxPoWRetargetInterval {
+		prev := blocks[height-1]
+		if prev != nil && prev.Bits != 0 {
+			return prev.Bits
+		}
+		return baseBits
+	}
+
+	// At retarget boundary
+	if height%AuxPoWRetargetInterval == 0 {
+		prev := blocks[height-1]
+		start := blocks[height-AuxPoWRetargetInterval]
+		if prev == nil || start == nil {
+			return baseBits
+		}
+		actualTimespan := prev.Timestamp - start.Timestamp
+		targetTimespan := int64(AuxPoWRetargetInterval) * TargetBlockSeconds
+
+		prevBits := prev.Bits
+		if prevBits == 0 {
+			prevBits = baseBits
+		}
+		return RetargetDifficulty(prevBits, actualTimespan, targetTimespan)
+	}
+
+	// Within retarget window, difficulty matches previous block
+	prev := blocks[height-1]
+	if prev != nil && prev.Bits != 0 {
+		return prev.Bits
+	}
+	return baseBits
+}

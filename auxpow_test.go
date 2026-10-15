@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/hex"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 )
@@ -66,6 +67,49 @@ func TestBitsAndTargetConversion(t *testing.T) {
 	if hardWork.Cmp(easyWork) <= 0 {
 		t.Fatalf("higher difficulty target must have higher work")
 	}
+
+	// Exact mathematical difficulty verification: 0x1c00ffff must be exactly 256.0 * Diff1
+	targetDiff1 := BitsToTarget(0x1d00ffff)
+	target256 := BitsToTarget(0x1c00ffff)
+
+	ratio := new(big.Int).Div(targetDiff1, target256)
+	if ratio.Int64() != 256 {
+		t.Fatalf("expected 0x1c00ffff to have difficulty exactly 256, got ratio %d", ratio.Int64())
+	}
+	rem := new(big.Int).Mod(targetDiff1, target256)
+	if rem.Sign() != 0 {
+		t.Fatalf("expected exact integer ratio 256 without remainder, got remainder %s", rem.String())
+	}
+}
+
+func TestDifficultySpoofingRejection(t *testing.T) {
+	miner := "go1506ef1879d748ce0713b0dd01da32ad2a4b1ce97b5a852ff18800c1e52982376"
+	pool := NewMiningPoolSimulator("Foundry_BTC", miner)
+
+	candidate := NewBlock(1, GenesisBlock().Hash, []Transaction{}, miner)
+	auxBlock, err := pool.SolveGoChainJob(candidate, DefaultGoAuxBits)
+	if err != nil {
+		t.Fatalf("SolveGoChainJob failed: %v", err)
+	}
+
+	// Attacker attempts to spoof bits to an astronomically easy target (0x207fffff)
+	spoofedBlock := *auxBlock.Block
+	spoofedBlock.Bits = 0x207fffff
+	spoofedBlock.AuxPoW = auxBlock.AuxPoW
+
+	state := chainState{
+		ChainID: ChainID,
+		Blocks:  []*Block{GenesisBlock(), &spoofedBlock},
+	}
+
+	_, err = validateState(state, false)
+	if err == nil {
+		t.Fatalf("node must reject spoofed difficulty bits, but accepted it")
+	}
+	if !strings.Contains(err.Error(), "difficulty spoofing rejected") {
+		t.Fatalf("expected 'difficulty spoofing rejected' error, got: %v", err)
+	}
+	t.Logf("✅ Node successfully rejected difficulty spoofing attack: %v", err)
 }
 
 func TestAuxPoWValidProofVerification(t *testing.T) {
