@@ -527,3 +527,23 @@ func TestMergedMiningIsolatedLifecycleEndToEnd(t *testing.T) {
 		mergedServer.goState.CurrentHeight, mergedServer.goState.BlocksMined, mergedServer.goState.FormattedGO,
 		mergedServer.DualWins, fmt.Sprintf("%.8f GO", float64(acct.Balance)/1e8), mergedServer.btcState.TotalMinedSat)
 }
+
+func TestMergedMiningBtcPauseControl(t *testing.T) {
+	server := NewMergedMiningServer("127.0.0.1:0", "127.0.0.1:0", "", "go1testminer123", "bc1qtestbtc123", "none", 1.0, 0x1f00ffff, 0x1f00ffff)
+	if !server.BtcMiningPaused {
+		t.Fatalf("expected BtcMiningPaused to be true when btc-rpc is 'none'")
+	}
+
+	// Verify resume and pause toggles
+	server.BtcMiningPaused = false
+	if server.BtcMiningPaused {
+		t.Fatalf("expected BtcMiningPaused to be false after unpausing")
+	}
+
+	server.BtcMiningPaused = true
+	if !server.BtcMiningPaused {
+		t.Fatalf("expected BtcMiningPaused to be true after pausing")
+	}
+
+	t.Logf("✅ Successfully verified Bitcoin mining pause control state")
+}

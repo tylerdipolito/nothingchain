@@ -121,6 +121,8 @@ type MergedMiningServer struct {
 	ShareDiff  float64
 	BtcRPCURL  string
 
+	BtcMiningPaused bool
+
 	mu              sync.RWMutex
 	btcState        *BitcoinChainState
 	goState         *GoChainMergedState
@@ -409,7 +411,13 @@ func NewMergedMiningServer(listenAddr, dashAddr, nodeURL, goMiner, btcMiner, btc
 	}
 
 	// Probe Bitcoin Core RPC if auto or configured
-	if srv.BtcRPCURL == "" || srv.BtcRPCURL == "auto" {
+	if srv.BtcRPCURL == "none" || srv.BtcRPCURL == "off" || srv.BtcRPCURL == "disabled" || srv.BtcRPCURL == "paused" {
+		srv.BtcRPCURL = ""
+		srv.BtcMiningPaused = true
+		srv.btcState.RPCConnected = false
+		srv.btcState.RPCNetwork = "PAUSED"
+		log.Printf("[MERGED-BTC] ⏸️ Bitcoin mining is PAUSED by configuration")
+	} else if srv.BtcRPCURL == "" || srv.BtcRPCURL == "auto" {
 		candidates := []string{
 			fmt.Sprintf("http://bitproof:bitproofpassword@%s:18443", getWslIP()),
 			"http://bitproof:bitproofpassword@127.0.0.1:18443",
@@ -484,7 +492,7 @@ func (s *MergedMiningServer) CreateNewMergedJob(candidate *Block, goBits uint32,
 	}
 
 	var tmpl *BlockTemplate
-	if s.BtcRPCURL != "" {
+	if !s.BtcMiningPaused && s.BtcRPCURL != "" {
 		if t, err := s.fetchBitcoinCoreTemplate(); err == nil && t != nil {
 			tmpl = t
 			s.btcState.Height = tmpl.Height
@@ -936,7 +944,13 @@ func (s *MergedMiningServer) handleSubmit(session *StratumSession, req *StratumR
 	}
 
 	isGoWin := parentHashInt.Cmp(goTarget) <= 0
-	isBtcWin := parentHashInt.Cmp(btcTarget) <= 0
+	isBtcWin := false
+	s.mu.RLock()
+	btcPaused := s.BtcMiningPaused
+	s.mu.RUnlock()
+	if !btcPaused {
+		isBtcWin = parentHashInt.Cmp(btcTarget) <= 0
+	}
 
 	// Check & Record in SQLite Database
 	if s.db != nil {
@@ -1337,7 +1351,7 @@ func (s *MergedMiningServer) StartDashboard(addr string) error {
 		goDiffFloat, _ := new(big.Float).Quo(new(big.Float).SetInt(diff1), new(big.Float).SetInt(goTarget)).Float64()
 
 		// Canonical synchronization with live Bitcoin Core engine
-		if s.BtcRPCURL != "" {
+		if !s.BtcMiningPaused && s.BtcRPCURL != "" {
 			if res, err := s.callBitcoinCoreRPC("getblockchaininfo", []any{}); err == nil {
 				var info struct {
 					Blocks        int64   `json:"blocks"`
@@ -1365,6 +1379,8 @@ func (s *MergedMiningServer) StartDashboard(addr string) error {
 			"share_diff":      s.ShareDiff,
 			"dual_wins_count": dualWins,
 			"bitcoin_parent": map[string]any{
+				"paused":              s.BtcMiningPaused,
+				"status":              map[bool]string{true: "PAUSED", false: "ACTIVE"}[s.BtcMiningPaused],
 				"height":              btcCopy.Height,
 				"tip_hash":            btcCopy.TipHash,
 				"target_bits":         fmt.Sprintf("0x%08x", btcCopy.TargetBits),
@@ -1376,7 +1392,7 @@ func (s *MergedMiningServer) StartDashboard(addr string) error {
 				"total_mined_btc":     fmt.Sprintf("%.8f BTC", float64(btcCopy.TotalMinedSat)/1e8),
 				"miner_address":       btcCopy.MinerAddress,
 				"recent_blocks":       btcRecent,
-				"rpc_connected":       btcCopy.RPCConnected,
+				"rpc_connected":       btcCopy.RPCConnected && !s.BtcMiningPaused,
 				"rpc_network":         btcCopy.RPCNetwork,
 				"rpc_url":             btcCopy.RPCURL,
 			},
@@ -1451,6 +1467,25 @@ func (s *MergedMiningServer) StartDashboard(addr string) error {
 		_ = json.NewEncoder(w).Encode(payouts)
 	})
 
+	mux.HandleFunc("POST /api/btc/pause", func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		s.BtcMiningPaused = true
+		s.btcState.RPCConnected = false
+		s.logEventLocked("pool", "⏸️ Bitcoin mining paused by operator", nil)
+		s.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "btc_paused": true})
+	})
+
+	mux.HandleFunc("POST /api/btc/resume", func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		s.BtcMiningPaused = false
+		s.logEventLocked("pool", "▶️ Bitcoin mining resumed by operator", nil)
+		s.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "btc_paused": false})
+	})
+
 	server := &http.Server{Addr: addr, Handler: mux}
 	log.Printf("[DASHBOARD] 📊 Merged Mining Dashboard live at http://%s", addr)
 	return server.ListenAndServe()
@@ -1472,6 +1507,7 @@ func runMergedStratum(args []string) error {
 	payoutMode := fs.String("payout-mode", "hybrid", "Payout mode: 'hybrid' (10% finder, 90% PPLNS) or 'solo'")
 	dbPath := fs.String("db", "bitproof_pool.db", "SQLite database path for transactional accounting")
 	pplnsWindow := fs.Int("pplns-window", 1000, "Number of past shares in PPLNS window")
+	pauseBTC := fs.Bool("pause-btc", false, "Pause Bitcoin block mining and block submission")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -1491,6 +1527,12 @@ func runMergedStratum(args []string) error {
 	dashAddr := fmt.Sprintf("%s:%d", *host, *dash)
 
 	srv := NewMergedMiningServer(stratumAddr, dashAddr, *node, defaultGoMiner, *btcMiner, *btcRPC, *diff, uint32(*btcBits), uint32(*goBits))
+	if *pauseBTC {
+		srv.BtcMiningPaused = true
+		srv.btcState.RPCConnected = false
+		srv.btcState.RPCNetwork = "PAUSED"
+		log.Printf("[MERGED-BTC] ⏸️ Bitcoin mining explicitly PAUSED by --pause-btc flag")
+	}
 
 	if *payoutMode == "solo" {
 		srv.PayoutMode = PayoutModeSolo
@@ -1785,6 +1827,7 @@ const mergedDashboardHTML = `<!DOCTYPE html>
             <span>Bitcoin Parent Network (BTC)</span>
           </div>
           <div style="display: flex; gap: 6px; align-items: center;">
+            <button id="btc-toggle-btn" onclick="toggleBtcMining()" style="background: rgba(234, 179, 8, 0.2); color: #eab308; border: 1px solid rgba(234, 179, 8, 0.4); padding: 4px 10px; border-radius: 6px; font-size: 10px; cursor: pointer; font-weight: 600;">PAUSE BITCOIN</button>
             <span class="badge" style="background: rgba(234, 179, 8, 0.2); color: #eab308; border: 1px solid rgba(234, 179, 8, 0.4); font-size: 10px;">REGTEST (NO CASH VALUE)</span>
             <span class="badge" id="btc-rpc-badge" style="background: rgba(34, 197, 94, 0.2); color: #22c55e; border: 1px solid rgba(34, 197, 94, 0.4); display: none;">BITCOIN CORE RPC</span>
             <span class="badge badge-btc">PARENT CHAIN</span>
@@ -1928,6 +1971,18 @@ const mergedDashboardHTML = `<!DOCTYPE html>
   </div>
 
   <script>
+    let btcPausedState = false;
+
+    async function toggleBtcMining() {
+      const action = btcPausedState ? "resume" : "pause";
+      try {
+        await fetch("/api/btc/" + action, { method: "POST" });
+        await updateStats();
+      } catch (err) {
+        console.error("Failed to toggle Bitcoin mining:", err);
+      }
+    }
+
     async function updateStats() {
       try {
         const res = await fetch("/api/stats");
@@ -1938,6 +1993,15 @@ const mergedDashboardHTML = `<!DOCTYPE html>
         document.getElementById("dual-count").textContent = d.dual_wins_count || 0;
 
         // Bitcoin
+        btcPausedState = Boolean(d.bitcoin_parent && d.bitcoin_parent.paused);
+        const toggleBtn = document.getElementById("btc-toggle-btn");
+        if (toggleBtn) {
+          toggleBtn.textContent = btcPausedState ? "RESUME BITCOIN" : "PAUSE BITCOIN";
+          toggleBtn.style.background = btcPausedState ? "rgba(34, 197, 94, 0.2)" : "rgba(234, 179, 8, 0.2)";
+          toggleBtn.style.color = btcPausedState ? "#22c55e" : "#eab308";
+          toggleBtn.style.borderColor = btcPausedState ? "rgba(34, 197, 94, 0.4)" : "rgba(234, 179, 8, 0.4)";
+        }
+
         document.getElementById("btc-height").textContent = Number(d.bitcoin_parent.height).toLocaleString();
         const btcDiff = Number(d.bitcoin_parent.difficulty);
         document.getElementById("btc-diff").textContent = btcDiff < 0.001 ? btcDiff.toExponential(4) : btcDiff.toLocaleString(undefined, {maximumFractionDigits: 2});
@@ -1947,10 +2011,23 @@ const mergedDashboardHTML = `<!DOCTYPE html>
         if (document.getElementById("btc-subsidy") && d.bitcoin_parent.subsidy_btc) {
           document.getElementById("btc-subsidy").textContent = d.bitcoin_parent.subsidy_btc;
         }
-        if (d.bitcoin_parent && d.bitcoin_parent.rpc_connected) {
-          const badge = document.getElementById("btc-rpc-badge");
-          badge.textContent = "BITCOIN CORE v28.0 (" + (d.bitcoin_parent.rpc_network || "regtest").toUpperCase() + ")";
-          badge.style.display = "inline-block";
+        const badge = document.getElementById("btc-rpc-badge");
+        if (badge) {
+          if (btcPausedState) {
+            badge.textContent = "BITCOIN MINING: PAUSED";
+            badge.style.display = "inline-block";
+            badge.style.background = "rgba(234, 179, 8, 0.2)";
+            badge.style.color = "#eab308";
+            badge.style.borderColor = "rgba(234, 179, 8, 0.4)";
+          } else if (d.bitcoin_parent && d.bitcoin_parent.rpc_connected) {
+            badge.textContent = "BITCOIN CORE v28.0 (" + (d.bitcoin_parent.rpc_network || "regtest").toUpperCase() + ")";
+            badge.style.display = "inline-block";
+            badge.style.background = "rgba(34, 197, 94, 0.2)";
+            badge.style.color = "#22c55e";
+            badge.style.borderColor = "rgba(34, 197, 94, 0.4)";
+          } else {
+            badge.style.display = "none";
+          }
         }
 
         // GoChain
