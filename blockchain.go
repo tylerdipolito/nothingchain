@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -25,10 +26,12 @@ type Blockchain struct {
 }
 type ledger struct {
 	amm         *ammState
+	tokens      *tokenState
 	height      int64
 	balances    map[string]int64
 	nonces      map[string]uint64
 	supply      int64
+	burned      int64
 	transferred int64
 }
 
@@ -41,7 +44,12 @@ func expectedGenesisHash() string {
 }
 
 func newLedger() *ledger {
-	return &ledger{amm: newAMMState(), balances: map[string]int64{}, nonces: map[string]uint64{}}
+	return &ledger{
+		amm:      newAMMState(),
+		tokens:   newTokenState(),
+		balances: map[string]int64{},
+		nonces:   map[string]uint64{},
+	}
 }
 func (l *ledger) apply(tx Transaction) error {
 	if err := tx.Validate(); err != nil {
@@ -49,6 +57,13 @@ func (l *ledger) apply(tx Transaction) error {
 	}
 	if l.nonces[tx.From] == math.MaxUint64 || tx.Nonce != l.nonces[tx.From]+1 {
 		return fmt.Errorf("invalid nonce: expected next nonce after %d", l.nonces[tx.From])
+	}
+	if strings.HasPrefix(tx.Memo, GRC20MemoPrefix) {
+		if err := l.applyGRC20(tx); err != nil {
+			return err
+		}
+		l.nonces[tx.From] = tx.Nonce
+		return nil
 	}
 	if AMMEnabled && strings.HasPrefix(tx.Memo, "amm:") {
 		if err := l.applyAMM(tx); err != nil {
@@ -333,6 +348,8 @@ type Stats struct {
 	TransferredGO        string `json:"total_transferred"`
 	TotalSupply          int64  `json:"total_supply_atoms"`
 	SupplyGO             string `json:"total_supply"`
+	BurnedSupply         int64  `json:"burned_atoms"`
+	BurnedGO             string `json:"burned"`
 	MaxSupply            *int64 `json:"max_supply"`
 	BlockReward          int64  `json:"block_reward_atoms"`
 	RewardGO             string `json:"block_reward"`
@@ -359,6 +376,8 @@ func (bc *Blockchain) Stats() Stats {
 		s.TotalTransferred = l.transferred
 		s.SupplyGO = formatAmount(l.supply)
 		s.TransferredGO = formatAmount(l.transferred)
+		s.BurnedSupply = l.burned
+		s.BurnedGO = formatAmount(l.burned)
 	}
 	_, pendingErr := validateState(bc.state, true)
 	s.CheckpointRequired = CheckpointRequired
@@ -369,4 +388,82 @@ func (bc *Blockchain) Stats() Stats {
 	}
 	s.Valid = err == nil && pendingErr == nil && bc.checkCheckpoint(bc.state, false) == nil
 	return s
+}
+
+// Tokens returns metadata for all tokens in the active ledger.
+func (bc *Blockchain) Tokens() ([]*TokenMetadata, error) {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	l, err := validateState(bc.state, false)
+	if err != nil {
+		return nil, err
+	}
+	var res []*TokenMetadata
+	for _, t := range l.tokens.Tokens {
+		cp := *t
+		res = append(res, &cp)
+	}
+	sort.Slice(res, func(i, j int) bool { return res[i].ID < res[j].ID })
+	return res, nil
+}
+
+// TokenMetadata returns metadata for a specific token ID.
+func (bc *Blockchain) TokenMetadata(tokenID string) (*TokenMetadata, error) {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	l, err := validateState(bc.state, false)
+	if err != nil {
+		return nil, err
+	}
+	t, ok := l.tokens.Tokens[tokenID]
+	if !ok {
+		return nil, fmt.Errorf("token %s not found", tokenID)
+	}
+	cp := *t
+	return &cp, nil
+}
+
+// TokenBalance returns an account's balance of a specific token in base units.
+func (bc *Blockchain) TokenBalance(tokenID, address string) (int64, error) {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	l, err := validateState(bc.state, false)
+	if err != nil {
+		return 0, err
+	}
+	if _, ok := l.tokens.Tokens[tokenID]; !ok {
+		return 0, fmt.Errorf("token %s not found", tokenID)
+	}
+	return l.tokens.Balances[tokenID][address], nil
+}
+
+// TokenHolders returns all non-zero balance holders of a token.
+func (bc *Blockchain) TokenHolders(tokenID string) (map[string]int64, error) {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	l, err := validateState(bc.state, false)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := l.tokens.Tokens[tokenID]; !ok {
+		return nil, fmt.Errorf("token %s not found", tokenID)
+	}
+	holders := make(map[string]int64)
+	for addr, bal := range l.tokens.Balances[tokenID] {
+		if bal > 0 {
+			holders[addr] = bal
+		}
+	}
+	return holders, nil
+}
+
+// TokenStateRoot returns the deterministic 32-byte hash commitment of the token state.
+func (bc *Blockchain) TokenStateRoot() (string, error) {
+	bc.mu.RLock()
+	defer bc.mu.RUnlock()
+	l, err := validateState(bc.state, false)
+	if err != nil {
+		return "", err
+	}
+	return l.tokens.ComputeStateRoot(), nil
 }

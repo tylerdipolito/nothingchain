@@ -27,3 +27,12 @@ __pycache__/
 /.checkpoint-local/
 /gochain-checkpoint-test.json
 /gochain-checkpoint-test.json.lock
+
+# SQLite database & local test data
+*.db
+*.db-shm
+*.db-wal
+*.exe~
+ledger-*.json
+ledger-*.json.lock
+.demo-creator-wallet.json

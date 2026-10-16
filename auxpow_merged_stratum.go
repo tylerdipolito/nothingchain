@@ -137,6 +137,10 @@ type MergedMiningServer struct {
 	RejectedShares uint64
 	DualWins       uint64
 
+	db          *PoolDatabase
+	PayoutMode  PayoutMode
+	PPLNSWindow int
+
 	OnDualWin       func(btcBlock *SolvedBitcoinBlock, goBlock *AuxBlock)
 	OnGoBlockMined  func(goBlock *AuxBlock)
 	OnBtcBlockMined func(btcBlock *SolvedBitcoinBlock)
@@ -196,6 +200,39 @@ func BitcoinAddressToScript(addr string) []byte {
 	p2pkh := append([]byte{0x76, 0xa9, 0x14}, h[:20]...)
 	p2pkh = append(p2pkh, 0x88, 0xac)
 	return append([]byte{byte(len(p2pkh))}, p2pkh...)
+}
+
+// ParseMinerUsername decomposes username into Go payout address, Bitcoin payout address, and friendly worker name.
+func ParseMinerUsername(username, defaultGO, defaultBTC string) (minerGO, minerBTC, workerName string) {
+	minerGO = defaultGO
+	minerBTC = defaultBTC
+	workerName = username
+
+	if strings.Contains(username, ":") {
+		parts := strings.SplitN(username, ":", 2)
+		btcPart := parts[0]
+		rest := parts[1]
+		if strings.HasPrefix(btcPart, "bc1") || strings.HasPrefix(btcPart, "bcrt1") || strings.HasPrefix(btcPart, "1") || strings.HasPrefix(btcPart, "3") {
+			minerBTC = btcPart
+		}
+		username = rest
+	}
+
+	if strings.Contains(username, ".") {
+		parts := strings.SplitN(username, ".", 2)
+		addrPart := parts[0]
+		workerName = parts[1]
+		if validAddress(addrPart) {
+			minerGO = addrPart
+		} else if strings.HasPrefix(addrPart, "bc1") || strings.HasPrefix(addrPart, "bcrt1") || strings.HasPrefix(addrPart, "1") || strings.HasPrefix(addrPart, "3") {
+			minerBTC = addrPart
+		}
+	} else if validAddress(username) {
+		minerGO = username
+		workerName = "default"
+	}
+
+	return minerGO, minerBTC, workerName
 }
 
 func getWslIP() string {
@@ -367,6 +404,8 @@ func NewMergedMiningServer(listenAddr, dashAddr, nodeURL, goMiner, btcMiner, btc
 		sessions:        make(map[uint64]*StratumSession),
 		shareHistory:    make([]shareRecord, 0),
 		eventLog:        make([]MergedEventLogEntry, 0),
+		PayoutMode:      PayoutModeHybrid,
+		PPLNSWindow:     1000,
 	}
 
 	// Probe Bitcoin Core RPC if auto or configured
@@ -701,9 +740,21 @@ func (s *MergedMiningServer) handleRPCRequest(session *StratumSession, req *Stra
 			session.Worker = params[0]
 		}
 		session.Authorized = true
+		session.ConnectedAt = time.Now()
+
+		minerGO, minerBTC, workerName := ParseMinerUsername(session.Worker, s.goState.MinerAddress, s.btcState.MinerAddress)
+		session.MinerGO = minerGO
+		session.MinerBTC = minerBTC
+		session.WorkerName = workerName
+
+		if s.db != nil {
+			_, _ = s.db.RegisterOrUpdateWorker(session.Worker, minerGO, minerBTC, workerName)
+		}
+
 		_ = session.Enc.Encode(StratumRPCResponse{ID: req.ID, Result: true, Error: nil})
 
-		log.Printf("[MERGED] 🔑 Miner Authorized: '%s' from %s", session.Worker, session.Conn.RemoteAddr())
+		log.Printf("[MERGED] 🔑 Miner Authorized: '%s' (Worker: %s, GO: %s, BTC: %s) from %s",
+			session.Worker, session.WorkerName, session.MinerGO, session.MinerBTC, session.Conn.RemoteAddr())
 
 		// Issue set_difficulty and first merged job
 		_ = session.Enc.Encode(StratumRPCNotification{
@@ -875,18 +926,44 @@ func (s *MergedMiningServer) handleSubmit(session *StratumSession, req *StratumR
 	}
 
 	if !foundValid {
+		if s.db != nil {
+			_ = s.db.RecordRejectedShare(session.Worker)
+		}
 		atomic.AddUint64(&s.RejectedShares, 1)
+		atomic.AddUint64(&session.SharesRejected, 1)
 		_ = session.Enc.Encode(StratumRPCResponse{ID: req.ID, Result: false, Error: []any{23, "Low difficulty share", nil}})
 		return
 	}
 
-	// Share accepted!
-	atomic.AddUint64(&s.AcceptedShares, 1)
-	s.recordShare(session.Difficulty)
-	_ = session.Enc.Encode(StratumRPCResponse{ID: req.ID, Result: true, Error: nil})
-
 	isGoWin := parentHashInt.Cmp(goTarget) <= 0
 	isBtcWin := parentHashInt.Cmp(btcTarget) <= 0
+
+	// Check & Record in SQLite Database
+	if s.db != nil {
+		accepted, isDup, err := s.db.RecordShare(session.Worker, jobID, session.Extranonce1, extranonce2Hex, nonceHex, session.Difficulty, parentHashHex, isGoWin, isBtcWin)
+		if isDup {
+			atomic.AddUint64(&s.RejectedShares, 1)
+			atomic.AddUint64(&session.SharesRejected, 1)
+			_ = session.Enc.Encode(StratumRPCResponse{ID: req.ID, Result: false, Error: []any{22, "Duplicate share", nil}})
+			return
+		}
+		if err != nil {
+			log.Printf("[DATABASE] ⚠️ SQLite share record warning: %v", err)
+		}
+		if !accepted && !isDup {
+			atomic.AddUint64(&s.RejectedShares, 1)
+			atomic.AddUint64(&session.SharesRejected, 1)
+			_ = session.Enc.Encode(StratumRPCResponse{ID: req.ID, Result: false, Error: []any{20, "Share rejected by pool", nil}})
+			return
+		}
+	}
+
+	// Share accepted!
+	atomic.AddUint64(&s.AcceptedShares, 1)
+	atomic.AddUint64(&session.SharesAccepted, 1)
+	session.LastShareAt = time.Now()
+	s.recordShare(session.Worker, session.Difficulty)
+	_ = session.Enc.Encode(StratumRPCResponse{ID: req.ID, Result: true, Error: nil})
 
 	s.LogEvent("share", fmt.Sprintf("Accepted share from %s (Hash: %s...)", session.Worker, parentHashHex[:12]), map[string]any{
 		"hash":       parentHashHex,
@@ -900,12 +977,12 @@ func (s *MergedMiningServer) handleSubmit(session *StratumSession, req *StratumR
 	subsidyBTC := fmt.Sprintf("%.8f BTC", float64(s.btcState.BlockSubsidy)/1e8)
 	if isGoWin && isBtcWin {
 		atomic.AddUint64(&s.DualWins, 1)
-		log.Printf("\n" + strings.Repeat("=", 68))
+		log.Println("\n" + strings.Repeat("=", 68))
 		log.Printf("[MERGED] 💎💎 DUAL MERGED MINING WIN! ONE COMPUTATION SOLVED BOTH CHAINS! 💎💎")
 		log.Printf("[MERGED] Parent Nonce: 0x%08x | Hash: %s", nonceVal, parentHashHex)
 		log.Printf("[MERGED] Won Bitcoin Block #%d (+%s) AND GoChain Block #%d (+10 GO)!",
 			job.BtcHeight, subsidyBTC, job.GoCandidate.Index)
-		log.Printf(strings.Repeat("=", 68) + "\n")
+		log.Println(strings.Repeat("=", 68) + "\n")
 
 		s.LogEvent("dual_win", fmt.Sprintf("💎 DUAL WIN: BTC Block #%d & GO Block #%d from same hash!",
 			job.BtcHeight, job.GoCandidate.Index), map[string]any{
@@ -947,7 +1024,19 @@ func (s *MergedMiningServer) handleSubmit(session *StratumSession, req *StratumR
 		}
 
 		if err := ValidateAuxPoW(goAuxBlock.Block, auxpow, job.GoTargetBits); err == nil {
-			log.Printf("[MERGED-GO] 🎉 AuxPoW Block #%d verified! Reward: 10 GO -> %s", goAuxBlock.Index, minerAddr)
+			log.Printf("[MERGED-GO] 🎉 AuxPoW Block #%d verified! Finder: %s", goAuxBlock.Index, session.Worker)
+
+			// Execute SQLite Transactional PPLNS / Solo Distribution
+			if s.db != nil {
+				dist, err := s.db.DistributeGoBlockReward(int64(goAuxBlock.Index), goAuxBlock.Hash, session.Worker, goAuxBlock.Reward, s.PayoutMode, s.PPLNSWindow)
+				if err == nil && dist != nil {
+					s.LogEvent("payout", fmt.Sprintf("GoChain Block #%d reward distributed (%s): %s",
+						goAuxBlock.Index, s.PayoutMode, fmt.Sprintf("%.8f GO", float64(goAuxBlock.Reward)/1e8)), dist)
+				} else if err != nil {
+					log.Printf("[DATABASE] ❌ Error distributing GoChain block reward: %v", err)
+				}
+			}
+
 			if s.goState.NodeURL != "" {
 				go s.submitGoBlockToNode(goAuxBlock, nonceVal, parentHashHex)
 			} else {
@@ -968,10 +1057,8 @@ func (s *MergedMiningServer) handleSubmit(session *StratumSession, req *StratumR
 		rawBlock = append(rawBlock, rawCoinbaseWit...)
 		rawBlockHex := hex.EncodeToString(rawBlock)
 
-		submittedToCore := false
 		if s.BtcRPCURL != "" {
 			if err := s.submitBitcoinCoreBlock(rawBlockHex); err == nil {
-				submittedToCore = true
 				log.Printf("[MERGED-BTC] 🎉🎉🎉 Bitcoin Core Node ACCEPTED Block #%d! Tip: %s", job.BtcHeight, parentHashHex)
 				s.LogEvent("btc_block", fmt.Sprintf("Bitcoin Core Node ACCEPTED Block #%d into chain tip (+%s)",
 					job.BtcHeight, subsidyBTC), map[string]any{
@@ -980,40 +1067,74 @@ func (s *MergedMiningServer) handleSubmit(session *StratumSession, req *StratumR
 					"miner":  s.btcState.MinerAddress,
 					"reward": subsidyBTC,
 				})
+
+				solvedBtcBlock = &SolvedBitcoinBlock{
+					Height:     job.BtcHeight,
+					Hash:       parentHashHex,
+					PrevHash:   job.BtcPrevHash,
+					MerkleRoot: merkleRootHex,
+					Timestamp:  ntimeVal,
+					Bits:       fmt.Sprintf("0x%08x", job.BtcBits),
+					Nonce:      fmt.Sprintf("0x%08x", nonceVal),
+					Version:    fmt.Sprintf("0x%08x", btcHeader.Version),
+					TxCount:    1,
+					RewardSat:  s.btcState.BlockSubsidy,
+					RewardBTC:  subsidyBTC,
+					Miner:      s.btcState.MinerAddress,
+					RawHex:     rawBlockHex,
+					SolvedAt:   time.Now().Unix(),
+					DualWin:    isGoWin,
+					Submitted:  true,
+				}
+
+				s.recordBtcBlock(solvedBtcBlock)
+				if s.db != nil {
+					_ = s.db.RecordBtcBlockPayout(solvedBtcBlock.Height, solvedBtcBlock.Hash, session.Worker, solvedBtcBlock.RewardSat)
+				}
+				log.Printf("[MERGED-BTC] 🏆 Verified Bitcoin Block #%d! (+%s) Hash: %s",
+					solvedBtcBlock.Height, subsidyBTC, parentHashHex)
+
+				if s.OnBtcBlockMined != nil {
+					s.OnBtcBlockMined(solvedBtcBlock)
+				}
+				s.advanceBitcoinState(parentHashHex)
 			} else {
-				log.Printf("[MERGED-BTC] Bitcoin Core submission error: %v", err)
+				// Duplicate or stale submission rejected by Bitcoin Core consensus
+				log.Printf("[MERGED-BTC] ⚠️ Non-canonical or duplicate block submission to Bitcoin Core: %v", err)
 			}
+		} else {
+			// Standalone simulated parent mode
+			solvedBtcBlock = &SolvedBitcoinBlock{
+				Height:     job.BtcHeight,
+				Hash:       parentHashHex,
+				PrevHash:   job.BtcPrevHash,
+				MerkleRoot: merkleRootHex,
+				Timestamp:  ntimeVal,
+				Bits:       fmt.Sprintf("0x%08x", job.BtcBits),
+				Nonce:      fmt.Sprintf("0x%08x", nonceVal),
+				Version:    fmt.Sprintf("0x%08x", btcHeader.Version),
+				TxCount:    1,
+				RewardSat:  s.btcState.BlockSubsidy,
+				RewardBTC:  subsidyBTC,
+				Miner:      s.btcState.MinerAddress,
+				RawHex:     rawBlockHex,
+				SolvedAt:   time.Now().Unix(),
+				DualWin:    isGoWin,
+				Submitted:  false,
+			}
+
+			s.recordBtcBlock(solvedBtcBlock)
+			if s.db != nil {
+				_ = s.db.RecordBtcBlockPayout(solvedBtcBlock.Height, solvedBtcBlock.Hash, session.Worker, solvedBtcBlock.RewardSat)
+			}
+			log.Printf("[MERGED-BTC] 🏆 Solved Bitcoin Block #%d! (+%s) Hash: %s",
+				solvedBtcBlock.Height, subsidyBTC, parentHashHex)
+
+			if s.OnBtcBlockMined != nil {
+				s.OnBtcBlockMined(solvedBtcBlock)
+			}
+			s.advanceBitcoinState(parentHashHex)
 		}
-
-		solvedBtcBlock = &SolvedBitcoinBlock{
-			Height:     job.BtcHeight,
-			Hash:       parentHashHex,
-			PrevHash:   job.BtcPrevHash,
-			MerkleRoot: merkleRootHex,
-			Timestamp:  ntimeVal,
-			Bits:       fmt.Sprintf("0x%08x", job.BtcBits),
-			Nonce:      fmt.Sprintf("0x%08x", nonceVal),
-			Version:    fmt.Sprintf("0x%08x", btcHeader.Version),
-			TxCount:    1,
-			RewardSat:  s.btcState.BlockSubsidy,
-			RewardBTC:  subsidyBTC,
-			Miner:      s.btcState.MinerAddress,
-			RawHex:     rawBlockHex,
-			SolvedAt:   time.Now().Unix(),
-			DualWin:    isGoWin,
-			Submitted:  submittedToCore,
-		}
-
-		s.recordBtcBlock(solvedBtcBlock)
-		log.Printf("[MERGED-BTC] 🏆 Solved Bitcoin Block #%d! (+%s) Hash: %s",
-			solvedBtcBlock.Height, subsidyBTC, parentHashHex)
-
-		if s.OnBtcBlockMined != nil {
-			s.OnBtcBlockMined(solvedBtcBlock)
-		}
-
-		// Advance Bitcoin parent state & broadcast new template
-		s.advanceBitcoinState(parentHashHex)
 	}
 
 	if isGoWin && isBtcWin && s.OnDualWin != nil {
@@ -1021,13 +1142,36 @@ func (s *MergedMiningServer) handleSubmit(session *StratumSession, req *StratumR
 	}
 }
 
-func (s *MergedMiningServer) recordShare(diff float64) {
+func (s *MergedMiningServer) recordShare(worker string, diff float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.shareHistory = append(s.shareHistory, shareRecord{timestamp: time.Now(), diff: diff})
+	s.shareHistory = append(s.shareHistory, shareRecord{timestamp: time.Now(), diff: diff, worker: worker})
 	if len(s.shareHistory) > 5000 {
 		s.shareHistory = s.shareHistory[len(s.shareHistory)-2000:]
 	}
+}
+
+// WorkerHashrateGHs calculates rolling hashrate for a specific worker over given window.
+func (s *MergedMiningServer) WorkerHashrateGHs(worker string, window time.Duration) float64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	cutoff := time.Now().Add(-window)
+	var totalDiff float64
+	count := 0
+	for i := len(s.shareHistory) - 1; i >= 0; i-- {
+		if s.shareHistory[i].timestamp.Before(cutoff) {
+			break
+		}
+		if s.shareHistory[i].worker == worker {
+			totalDiff += s.shareHistory[i].diff
+			count++
+		}
+	}
+	if count == 0 {
+		return 0
+	}
+	hashesPerSec := (totalDiff * 4294967296.0) / window.Seconds()
+	return hashesPerSec / 1e9
 }
 
 func (s *MergedMiningServer) recordGoBlock(ab *AuxBlock, parentNonce uint32, parentHash string) {
@@ -1192,6 +1336,25 @@ func (s *MergedMiningServer) StartDashboard(addr string) error {
 		btcDiffFloat, _ := new(big.Float).Quo(new(big.Float).SetInt(diff1), new(big.Float).SetInt(btcTarget)).Float64()
 		goDiffFloat, _ := new(big.Float).Quo(new(big.Float).SetInt(diff1), new(big.Float).SetInt(goTarget)).Float64()
 
+		// Canonical synchronization with live Bitcoin Core engine
+		if s.BtcRPCURL != "" {
+			if res, err := s.callBitcoinCoreRPC("getblockchaininfo", []any{}); err == nil {
+				var info struct {
+					Blocks        int64   `json:"blocks"`
+					BestBlockHash string  `json:"bestblockhash"`
+					Difficulty    float64 `json:"difficulty"`
+				}
+				if json.Unmarshal(res, &info) == nil {
+					btcCopy.Height = info.Blocks
+					btcCopy.TipHash = info.BestBlockHash
+					btcDiffFloat = info.Difficulty
+					btcCopy.BlocksMined = uint64(info.Blocks)
+					btcCopy.TotalMinedSat = info.Blocks * btcCopy.BlockSubsidy
+					btcCopy.TotalMinedBTC = fmt.Sprintf("%.8f BTC", float64(btcCopy.TotalMinedSat)/1e8)
+				}
+			}
+		}
+
 		stats := map[string]any{
 			"mining":          activeWorker != "",
 			"worker":          activeWorker,
@@ -1231,6 +1394,8 @@ func (s *MergedMiningServer) StartDashboard(addr string) error {
 				"node_url":            goCopy.NodeURL,
 				"recent_blocks":       goRecent,
 			},
+			"payout_mode":     string(s.PayoutMode),
+			"pplns_window":    s.PPLNSWindow,
 			"event_log": eventLogCopy,
 			"solana_cross_chain": map[string]any{
 				"program_id": "63BJKNhEb4ZAnzHHyuvhFXZT3XGuwEyrojzQa2yTCTDy",
@@ -1241,6 +1406,49 @@ func (s *MergedMiningServer) StartDashboard(addr string) error {
 		}
 
 		_ = json.NewEncoder(w).Encode(stats)
+	})
+
+	mux.HandleFunc("GET /api/workers", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if s.db == nil {
+			_ = json.NewEncoder(w).Encode([]any{})
+			return
+		}
+		workers, err := s.db.GetAllWorkers()
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		s.mu.RLock()
+		activeWorkers := make(map[string]float64)
+		for _, sess := range s.sessions {
+			if sess.Authorized {
+				activeWorkers[sess.Worker] = s.WorkerHashrateGHs(sess.Worker, 60*time.Second)
+			}
+		}
+		s.mu.RUnlock()
+
+		for i := range workers {
+			if hr, online := activeWorkers[workers[i].WorkerID]; online {
+				workers[i].Online = true
+				workers[i].HashrateGHs = hr
+			}
+		}
+		_ = json.NewEncoder(w).Encode(workers)
+	})
+
+	mux.HandleFunc("GET /api/payouts", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if s.db == nil {
+			_ = json.NewEncoder(w).Encode([]any{})
+			return
+		}
+		payouts, err := s.db.GetRecentPayouts(50)
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(payouts)
 	})
 
 	server := &http.Server{Addr: addr, Handler: mux}
@@ -1261,6 +1469,9 @@ func runMergedStratum(args []string) error {
 	diff := fs.Float64("diff", 16.0, "Stratum share difficulty for Bitaxe")
 	wallet := fs.String("wallet", WalletFile, "wallet file for GoChain miner")
 	btcRPC := fs.String("btc-rpc", "auto", "Bitcoin Core RPC URL (or 'auto' to auto-connect to WSL/local node)")
+	payoutMode := fs.String("payout-mode", "hybrid", "Payout mode: 'hybrid' (10% finder, 90% PPLNS) or 'solo'")
+	dbPath := fs.String("db", "bitproof_pool.db", "SQLite database path for transactional accounting")
+	pplnsWindow := fs.Int("pplns-window", 1000, "Number of past shares in PPLNS window")
 
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -1280,6 +1491,20 @@ func runMergedStratum(args []string) error {
 	dashAddr := fmt.Sprintf("%s:%d", *host, *dash)
 
 	srv := NewMergedMiningServer(stratumAddr, dashAddr, *node, defaultGoMiner, *btcMiner, *btcRPC, *diff, uint32(*btcBits), uint32(*goBits))
+
+	if *payoutMode == "solo" {
+		srv.PayoutMode = PayoutModeSolo
+	} else {
+		srv.PayoutMode = PayoutModeHybrid
+	}
+	srv.PPLNSWindow = *pplnsWindow
+
+	if poolDB, err := NewPoolDatabase(*dbPath); err == nil {
+		srv.db = poolDB
+		defer poolDB.Close()
+	} else {
+		log.Printf("[DATABASE] ⚠️ Warning: Failed to open SQLite pool db: %v", err)
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -1559,7 +1784,8 @@ const mergedDashboardHTML = `<!DOCTYPE html>
             <span>🪙</span>
             <span>Bitcoin Parent Network (BTC)</span>
           </div>
-          <div style="display: flex; gap: 6px;">
+          <div style="display: flex; gap: 6px; align-items: center;">
+            <span class="badge" style="background: rgba(234, 179, 8, 0.2); color: #eab308; border: 1px solid rgba(234, 179, 8, 0.4); font-size: 10px;">REGTEST (NO CASH VALUE)</span>
             <span class="badge" id="btc-rpc-badge" style="background: rgba(34, 197, 94, 0.2); color: #22c55e; border: 1px solid rgba(34, 197, 94, 0.4); display: none;">BITCOIN CORE RPC</span>
             <span class="badge badge-btc">PARENT CHAIN</span>
           </div>
@@ -1567,15 +1793,17 @@ const mergedDashboardHTML = `<!DOCTYPE html>
         <div class="stats-row">
           <div class="stat-box">
             <div class="stat-label">Block Height</div>
-            <div class="stat-val val-btc" id="btc-height">885,000</div>
+            <div class="stat-val val-btc" id="btc-height">--</div>
           </div>
           <div class="stat-box">
             <div class="stat-label">Target Difficulty</div>
             <div class="stat-val" id="btc-diff">--</div>
+            <div style="font-size: 9px; color: var(--text-muted); margin-top: 2px;">(Target Bits: 0x207fffff)</div>
           </div>
           <div class="stat-box">
             <div class="stat-label">Block Subsidy</div>
-            <div class="stat-val val-btc" id="btc-subsidy">3.125 BTC</div>
+            <div class="stat-val val-btc" id="btc-subsidy">50.00 BTC</div>
+            <div style="font-size: 9px; color: #eab308; margin-top: 2px;">REGTEST DEMO REWARD</div>
           </div>
         </div>
         <div class="stats-row">
@@ -1584,8 +1812,9 @@ const mergedDashboardHTML = `<!DOCTYPE html>
             <div class="stat-val val-btc" id="btc-blocks-won">0</div>
           </div>
           <div class="stat-box" style="grid-column: span 2;">
-            <div class="stat-label">Total BTC Earned</div>
+            <div class="stat-label">Canonical Regtest BTC in UTXO Set</div>
             <div class="stat-val val-btc" id="btc-total-earned">0.00000000 BTC</div>
+            <div style="font-size: 9px; color: var(--text-muted); margin-top: 2px;">Verified in Bitcoin Core UTXO database · Zero fiat value</div>
           </div>
         </div>
         <div class="stat-label">Bitcoin Payout Address</div>
@@ -1648,6 +1877,30 @@ const mergedDashboardHTML = `<!DOCTYPE html>
         <div class="stat-label">Solana Devnet Bridge</div>
         <div class="stat-val" style="color: var(--go-cyan); font-size: 13px;">wGO / GoAMM VERIFIED</div>
       </div>
+    <!-- Multi-Miner PPLNS Accounting Table -->
+    <div class="feed-card" style="margin-bottom: 20px;">
+      <div class="feed-header">
+        <span>👷 Multi-Miner Testnet v1: Connected Miners & PPLNS Balances</span>
+        <span class="badge" style="background: rgba(34, 197, 94, 0.2); color: #22c55e;" id="pool-payout-mode">HYBRID (10% FINDER, 90% PPLNS)</span>
+      </div>
+      <div style="overflow-x: auto;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 13px; text-align: left;">
+          <thead>
+            <tr style="border-bottom: 1px solid var(--border); color: var(--text-muted);">
+              <th style="padding: 10px;">Worker</th>
+              <th style="padding: 10px;">Status</th>
+              <th style="padding: 10px;">GoChain Payout Address</th>
+              <th style="padding: 10px;">Hashrate</th>
+              <th style="padding: 10px;">Shares (Acc/Rej)</th>
+              <th style="padding: 10px;">Contributed Work</th>
+              <th style="padding: 10px;">Earned GO Balance</th>
+            </tr>
+          </thead>
+          <tbody id="miners-tbody">
+            <tr><td colspan="7" style="padding: 15px; text-align: center; color: var(--text-muted);">Waiting for miners to connect...</td></tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <!-- Bottom Feeds -->
@@ -1686,8 +1939,9 @@ const mergedDashboardHTML = `<!DOCTYPE html>
 
         // Bitcoin
         document.getElementById("btc-height").textContent = Number(d.bitcoin_parent.height).toLocaleString();
-        document.getElementById("btc-diff").textContent = Number(d.bitcoin_parent.difficulty).toFixed(2);
-        document.getElementById("btc-blocks-won").textContent = d.bitcoin_parent.blocks_mined;
+        const btcDiff = Number(d.bitcoin_parent.difficulty);
+        document.getElementById("btc-diff").textContent = btcDiff < 0.001 ? btcDiff.toExponential(4) : btcDiff.toLocaleString(undefined, {maximumFractionDigits: 2});
+        document.getElementById("btc-blocks-won").textContent = Number(d.bitcoin_parent.blocks_mined).toLocaleString();
         document.getElementById("btc-total-earned").textContent = d.bitcoin_parent.total_mined_btc;
         document.getElementById("btc-miner-addr").textContent = d.bitcoin_parent.miner_address;
         if (document.getElementById("btc-subsidy") && d.bitcoin_parent.subsidy_btc) {
@@ -1756,12 +2010,51 @@ const mergedDashboardHTML = `<!DOCTYPE html>
           ` + "`" + `).join("");
           document.getElementById("recent-count").textContent = allBlocks.length + " Blocks";
         }
+        if (d.payout_mode) {
+          const modeBadge = document.getElementById("pool-payout-mode");
+          if (modeBadge) {
+            modeBadge.textContent = d.payout_mode.toUpperCase() + (d.payout_mode === "hybrid" ? " (10% FINDER, 90% PPLNS)" : " (100% FINDER SOLO)");
+          }
+        }
       } catch (err) {
         console.error("Stats fetch error:", err);
       }
     }
+
+    async function updateWorkers() {
+      try {
+        const res = await fetch("/api/workers");
+        if (!res.ok) return;
+        const workers = await res.json();
+        const tbody = document.getElementById("miners-tbody");
+        if (!workers || workers.length === 0) {
+          tbody.innerHTML = ` + "`" + `<tr><td colspan="7" style="padding: 15px; text-align: center; color: var(--text-muted);">No workers recorded yet.</td></tr>` + "`" + `;
+          return;
+        }
+        tbody.innerHTML = workers.map(w => {
+          const statusBadge = w.online 
+            ? ` + "`" + `<span class="badge" style="background: rgba(34, 197, 94, 0.2); color: #22c55e;">ONLINE</span>` + "`" + ` 
+            : ` + "`" + `<span class="badge" style="background: rgba(148, 163, 184, 0.2); color: #94a3b8;">IDLE</span>` + "`" + `;
+          const hr = w.hashrate_ghs >= 1000 ? (w.hashrate_ghs/1000).toFixed(2) + " TH/s" : (w.hashrate_ghs || 0).toFixed(2) + " GH/s";
+          return ` + "`" + `<tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
+            <td style="padding: 10px; font-weight: bold; color: var(--text-light);">${w.worker_name || w.worker_id}</td>
+            <td style="padding: 10px;">${statusBadge}</td>
+            <td style="padding: 10px; font-family: monospace; font-size: 11px; color: var(--go-cyan);">${w.miner_go}</td>
+            <td style="padding: 10px; font-weight: 600; color: var(--green);">${hr}</td>
+            <td style="padding: 10px;">${w.shares_accepted} / ${w.shares_accepted + w.shares_rejected}</td>
+            <td style="padding: 10px; font-family: monospace;">${w.total_difficulty.toFixed(1)}</td>
+            <td style="padding: 10px; font-weight: bold; color: var(--go-cyan);">${w.earned_go_formatted}</td>
+          </tr>` + "`" + `;
+        }).join("");
+      } catch (err) {
+        console.error("Workers fetch error:", err);
+      }
+    }
+
     setInterval(updateStats, 1500);
+    setInterval(updateWorkers, 2000);
     updateStats();
+    updateWorkers();
   </script>
 </body>
 </html>

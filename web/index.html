@@ -7,7 +7,7 @@
  <a class="brand" href="#overview" aria-label="GoChain home"><span class="brand-icon">g<span>↗</span></span><span>gochain<span class="brand-dot">.</span></span></a>
  <div class="workspace"><span class="mini-orbit">◎</span><div>Local workspace<small>Development network</small></div><span class="workspace-dot"></span></div>
  <div class="nav-label">WORKSPACE</div>
- <nav aria-label="Main navigation"><a href="#overview" class="nav-link active"><span>▦</span>Overview</a><a href="#blocks" class="nav-link"><span>▧</span>Block explorer</a><a href="#network" class="nav-link"><span>⌘</span>Network</a></nav>
+ <nav aria-label="Main navigation"><a href="#overview" class="nav-link active"><span>▦</span>Overview</a><a href="#tokens" class="nav-link"><span>◈</span>GRC-20 Tokens</a><a href="#blocks" class="nav-link"><span>▧</span>Block explorer</a><a href="#network" class="nav-link"><span>⌘</span>Network</a></nav>
  <div class="sidebar-bottom"><span class="tag">EXPERIMENTAL</span><p>Small network.<br>Real blocks.</p><span class="muted">GoChain · minute / leap v2</span><div class="sidebar-line"></div><a href="/stats" target="_blank" rel="noopener">View node API <span>↗</span></a></div>
 </aside>
 <div class="shell">
@@ -22,6 +22,93 @@
    </div>
    <div class="metrics"><article><div class="metric-label">CHAIN HEIGHT <span>▧</span></div><strong id="height">—</strong><small id="blockCount">Loading blocks</small></article><article><div class="metric-label">IN CIRCULATION <span>◉</span></div><strong><span id="supply">—</span> <em>GO</em></strong><small>Minted through block rewards</small></article><article><div class="metric-label">PENDING TRANSFERS <span>⇄</span></div><strong id="pending">—</strong><small id="pendingCaption">Waiting for the next block</small></article><article><div class="metric-label">NEXT HALVING <span>◷</span></div><strong id="halving">—</strong><small id="halvingCaption">Leap-day reward schedule · UTC</small></article></div>
    <article class="panel chain-panel"><div class="panel-heading"><div><h2>The chain keeps growing</h2><p>Latest blocks, independently checked by your node.</p></div><span class="status-pill" id="chainValidity">Checking</span></div><div class="block-track" id="blockTrack" aria-label="Latest blocks"><div class="empty">Waiting for the first snapshot…</div></div><div class="track-footer"><span><i class="dot"></i> Newest blocks appear on the left</span><a href="#blocks">Explore the ledger <span>↗</span></a></div></article>
+  </section>
+  <section id="tokens" class="panel explorer section-anchor" style="margin-top:25px;">
+   <div class="panel-heading">
+    <div>
+     <div class="eyebrow">ASSET LAYER</div>
+     <h2>GRC-20 Native Tokens</h2>
+     <p>Issue business tokens, gift cards, and community assets directly on GoChain.</p>
+    </div>
+    <div style="display:flex;gap:10px;align-items:center;">
+     <span class="status-pill good" id="tokensStateRoot">Root: Loading…</span>
+     <span class="status-pill" id="tokensBurnedBadge">Burned: — GO</span>
+    </div>
+   </div>
+   <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;padding:20px 24px;">
+    <div style="background:#1b231d;border:1px solid var(--border);border-radius:8px;padding:18px;">
+     <h3 style="margin:0 0 12px;font-size:14px;color:var(--accent);">Issue New Asset (Burns 1 GO)</h3>
+     <form id="createTokenForm" style="display:grid;gap:10px;">
+      <div>
+       <small style="display:block;color:var(--muted);font-size:10px;margin-bottom:4px;">TOKEN NAME</small>
+       <input id="tokenName" type="text" placeholder="e.g. Coffee Bucks" required style="width:100%;padding:8px;background:#111813;border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:12px;">
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+       <div>
+        <small style="display:block;color:var(--muted);font-size:10px;margin-bottom:4px;">SYMBOL (1-10 UPPERCASE)</small>
+        <input id="tokenSymbol" type="text" placeholder="BREW" maxlength="10" required style="width:100%;padding:8px;background:#111813;border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:12px;text-transform:uppercase;">
+       </div>
+       <div>
+        <small style="display:block;color:var(--muted);font-size:10px;margin-bottom:4px;">DECIMALS (0-18)</small>
+        <input id="tokenDecimals" type="number" min="0" max="18" value="6" required style="width:100%;padding:8px;background:#111813;border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:12px;">
+       </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+       <div>
+        <small style="display:block;color:var(--muted);font-size:10px;margin-bottom:4px;">INITIAL SUPPLY (BASE UNITS)</small>
+        <input id="tokenInitial" type="number" min="0" value="1000000" style="width:100%;padding:8px;background:#111813;border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:12px;">
+       </div>
+       <div>
+        <small style="display:block;color:var(--muted);font-size:10px;margin-bottom:4px;">MAX SUPPLY (0 = UNLIMITED)</small>
+        <input id="tokenMax" type="number" min="0" value="10000000" style="width:100%;padding:8px;background:#111813;border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:12px;">
+       </div>
+      </div>
+      <button type="submit" class="button" style="margin-top:6px;background:#283822;border-color:#485e3c;color:var(--accent);font-weight:600;">Issue Asset (Burn 1 GO)</button>
+     </form>
+    </div>
+    <div style="background:#1b231d;border:1px solid var(--border);border-radius:8px;padding:18px;">
+     <h3 style="margin:0 0 12px;font-size:14px;color:#d5e2d2;">Transfer Token</h3>
+     <form id="transferTokenForm" style="display:grid;gap:10px;">
+      <div>
+       <small style="display:block;color:var(--muted);font-size:10px;margin-bottom:4px;">SELECT TOKEN</small>
+       <select id="transferTokenSelect" style="width:100%;padding:8px;background:#111813;border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:12px;">
+        <option value="">No tokens registered yet</option>
+       </select>
+      </div>
+      <div>
+       <small style="display:block;color:var(--muted);font-size:10px;margin-bottom:4px;">RECIPIENT ADDRESS</small>
+       <input id="transferRecipient" type="text" placeholder="go1..." required style="width:100%;padding:8px;background:#111813;border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:12px;">
+      </div>
+      <div>
+       <small style="display:block;color:var(--muted);font-size:10px;margin-bottom:4px;">AMOUNT (BASE UNITS)</small>
+       <input id="transferAmount" type="number" min="1" placeholder="e.g. 50000" required style="width:100%;padding:8px;background:#111813;border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:12px;">
+      </div>
+      <button type="submit" class="button secondary" style="margin-top:6px;">Send Token Transfer</button>
+     </form>
+    </div>
+   </div>
+   <div class="table-scroll">
+    <table>
+     <thead>
+      <tr>
+       <th>ASSET ID</th>
+       <th>SYMBOL</th>
+       <th>NAME</th>
+       <th>DECIMALS</th>
+       <th>TOTAL SUPPLY</th>
+       <th>MINT AUTHORITY</th>
+       <th>CREATED AT</th>
+      </tr>
+     </thead>
+     <tbody id="tokenRows">
+      <tr><td colspan="7" class="empty">Loading token assets…</td></tr>
+     </tbody>
+    </table>
+   </div>
+   <div class="table-footer">
+    <span id="tokenResultCount">0 tokens registered</span>
+    <span class="muted">All nodes cryptographically enforce identical supplies</span>
+   </div>
   </section>
   <section id="blocks" class="panel explorer section-anchor"><div class="panel-heading"><div><div class="eyebrow">THE LEDGER</div><h2>Block explorer</h2></div><label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Search height, hash, or miner" aria-label="Search blocks by height, hash, or miner"></label></div><div class="table-scroll"><table><thead><tr><th>BLOCK</th><th>MINED</th><th>TRANSACTIONS</th><th>MINER</th><th>REWARD</th><th>HASH</th><th><span class="sr-only">Details</span></th></tr></thead><tbody id="blockRows"><tr><td colspan="7" class="empty">Loading the ledger…</td></tr></tbody></table></div><div class="table-footer"><span id="resultCount">— blocks</span><button class="button secondary small" id="loadMore" hidden>Load more blocks ↓</button><span class="muted">Select a block for its details</span></div></section>
   <section id="network" class="section-anchor"><div class="section-heading"><div><div class="eyebrow">BETTER TOGETHER</div><h2>Your local network</h2></div><span class="network-summary" id="networkSummary">Checking connections…</span></div><div class="network-grid" id="networkCards"><div class="panel empty">Waiting for node status…</div></div></section>

@@ -13,6 +13,7 @@ import (
 type shareRecord struct {
 	timestamp time.Time
 	diff      float64
+	worker    string
 }
 
 type minedBlockSummary struct {

@@ -69,6 +69,13 @@ type StratumSession struct {
 	Difficulty     float64
 	Subscribed     bool
 	Authorized     bool
+	MinerGO        string
+	MinerBTC       string
+	WorkerName     string
+	ConnectedAt    time.Time
+	LastShareAt    time.Time
+	SharesAccepted uint64
+	SharesRejected uint64
 }
 
 // AuxPoWStratumServer bridges Bitcoin ASIC miners (via Stratum v1) directly to GoChain AuxPoW consensus.
@@ -625,12 +632,12 @@ func (s *AuxPoWStratumServer) handleSubmit(session *StratumSession, req *Stratum
 			return
 		}
 
-		log.Printf("\n" + strings.Repeat("=", 64))
+		log.Println("\n" + strings.Repeat("=", 64))
 		log.Printf("[AUXPOW] 🎉 BITAXE SOLUTION FOUND FOR GOCHAIN BLOCK #%d! 🎉", auxBlock.Index)
 		log.Printf("[AUXPOW] Bitcoin Parent Nonce: 0x%08x | Hash: %s", btcHeader.Nonce, parentHashHex)
 		log.Printf("[AUXPOW] GoChain Target Met! Compact Bits: 0x%08x", job.GoTargetBits)
 		log.Printf("[AUXPOW] Reward: %d atoms (~10 GO) -> %s", auxBlock.Reward, auxBlock.Miner)
-		log.Printf(strings.Repeat("=", 64) + "\n")
+		log.Println(strings.Repeat("=", 64) + "\n")
 
 		if s.OnBlockMined != nil {
 			s.OnBlockMined(auxBlock)

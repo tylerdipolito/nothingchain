@@ -51,6 +51,8 @@ func run(args []string) error {
 		return runSimulation(args[1:])
 	case "amm":
 		return runAMM(args[1:])
+	case "token":
+		return runToken(args[1:])
 	case "stratum":
 		return runStratum(args[1:])
 	case "merged-stratum":
@@ -340,6 +342,7 @@ func newHandlerMonitored(bc *Blockchain, defaultMiner string, auto bool, interva
 	mux := http.NewServeMux()
 	registerDashboard(mux)
 	registerAMM(mux, bc)
+	registerTokens(mux, bc)
 	mux.HandleFunc("GET /explorer/blocks", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, explorerBlocks(bc)) })
 	mux.HandleFunc("GET /sync", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, bc.Snapshot()) })
 	mux.HandleFunc("GET /peers", func(w http.ResponseWriter, r *http.Request) {
@@ -468,6 +471,7 @@ func usage() {
   gochain serve --port 8080 --mine --interval 1m [--data PATH] [--peers URL,...]
   gochain mine [--miner ADDRESS] [--offline]
   gochain send --to ADDRESS --amount 1 [--wallet PATH] [--memo TEXT]
+  gochain token create|mint|transfer|burn|set-authority|list|info|balance|holders|state-root [flags]
   gochain stratum --port 3333 [--diff 16] [--node http://127.0.0.1:8086]
   gochain merged-stratum --port 3335 [--dash 3336] [--btc-bits BITS] [--node http://127.0.0.1:8092]
   gochain balance ADDRESS

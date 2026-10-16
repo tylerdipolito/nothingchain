@@ -1,0 +1,12 @@
+import urllib.request, json, base64
+auth = base64.b64encode(b'bitproof:bitproofpassword').decode('ascii')
+payload = json.dumps({'jsonrpc': '2.0', 'id': 'test', 'method': 'getblocktemplate', 'params': [{'rules': ['segwit']}]}).encode('utf-8')
+req = urllib.request.Request('http://127.0.0.1:18443/', data=payload)
+req.add_header('Authorization', 'Basic ' + auth)
+req.add_header('Content-Type', 'application/json')
+res = json.loads(urllib.request.urlopen(req).read())
+print('Height:', res['result']['height'])
+print('Bits:', res['result']['bits'])
+print('PrevBlock:', res['result']['previousblockhash'])
+print('Target:', res['result']['target'])
+print('CoinbaseValue:', res['result']['coinbasevalue'])

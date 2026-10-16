@@ -394,7 +394,7 @@ func TestAuxPoWIsolatedEndToEndLifecycle(t *testing.T) {
 		t.Fatalf("expected wallet balance %d atoms (10 GO), got %d atoms", expectedRewardAtoms, account.Balance)
 	}
 
-	t.Logf("\n" + strings.Repeat("=", 70))
+	t.Logf("%s", "\n"+strings.Repeat("=", 70))
 	t.Logf("🏆 FULL ASIC MINING LIFECYCLE VERIFIED ON ISOLATED TEST NETWORK!")
 	t.Logf("   - Wallet Address: %s", minerAddr)
 	t.Logf("   - Confirmed Balance: %d atoms (%.8f GO)", account.Balance, float64(account.Balance)/1e8)
@@ -402,7 +402,7 @@ func TestAuxPoWIsolatedEndToEndLifecycle(t *testing.T) {
 	t.Logf("   - Block Hash: %s", adoptedBlock.Hash)
 	t.Logf("   - Bitcoin Parent Header Nonce: 0x%08x", adoptedBlock.AuxPoW.ParentHeader.Nonce)
 	t.Logf("   - Coinbase Commitment: Valid (\\xfabe6d6d + GoBlockHash)")
-	t.Logf(strings.Repeat("=", 70) + "\n")
+	t.Logf("%s", strings.Repeat("=", 70)+"\n")
 
 	_ = os.Remove(ledgerPath)
 }

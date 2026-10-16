@@ -1,6 +1,6 @@
 'use strict';
 const $ = id => document.getElementById(id);
-const state = {health:null,stats:null,peers:[],blocks:[],account:null,limit:10,query:'',tip:null,online:false,lastUpdated:0,clockOffset:0,loading:false,selected:null};
+const state = {health:null,stats:null,peers:[],blocks:[],account:null,tokens:[],tokenStateRoot:'',limit:10,query:'',tip:null,online:false,lastUpdated:0,clockOffset:0,loading:false,selected:null};
 const text = (id,value) => { $(id).textContent=value; };
 const el = (tag,className,value) => { const n=document.createElement(tag); if(className)n.className=className; if(value!==undefined)n.textContent=value; return n; };
 const short = (s,start=9,end=6) => s && s.length>start+end+3 ? s.slice(0,start)+'…'+s.slice(-end) : (s||'—');
@@ -11,6 +11,7 @@ const now = () => Date.now()+state.clockOffset;
 function age(timestamp){ const seconds=Math.max(0,Math.floor((now()-timestamp*1000)/1000)); if(seconds<5)return 'Just now'; if(seconds<60)return seconds+'s ago'; if(seconds<3600)return Math.floor(seconds/60)+'m ago'; if(seconds<86400)return Math.floor(seconds/3600)+'h ago'; return Math.floor(seconds/86400)+'d ago'; }
 function badge(node,label,kind=''){node.textContent=label;node.className='status-pill'+(kind?' '+kind:'');}
 async function api(path){ const response=await fetch(path,{cache:'no-store',signal:AbortSignal.timeout(8000)});if(!response.ok)throw new Error('Node request failed ('+response.status+')');return response.json(); }
+async function postApi(path,body){ const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}); if(!response.ok){ const err=await response.text(); throw new Error(err||'Request failed ('+response.status+')'); } return response.json(); }
 function toast(message){text('toast',message);$('toast').hidden=false;clearTimeout(toast.timer);toast.timer=setTimeout(()=>{$('toast').hidden=true;},3500);}
 async function copyWallet(){if(!state.health)return;try{await navigator.clipboard.writeText(state.health.miner);toast('Wallet address copied');}catch{toast('Copy unavailable. Select the wallet address to copy it.');}}
 function renderOverview(){
@@ -95,17 +96,38 @@ function renderDialog(){
  for(const tx of block.txs){const card=el('article','transfer-card');card.append(el('strong',null,tx.amount+' GO'),el('p',null,'From: '+tx.from),el('p',null,'To: '+tx.to),el('p',null,'Nonce: '+tx.nonce));if(tx.memo)card.append(el('p',null,'Memo: '+tx.memo));transfers.append(card);}
  target.append(transfers,el('p','dialog-note','Confirmations count blocks on this node’s current branch. Competing branches can reorganize this experimental chain.'));
 }
+function renderTokens(){
+ const s=state.stats;
+ text('tokensStateRoot',state.tokenStateRoot?'Root: '+short(state.tokenStateRoot,8,6):'Root: None');
+ text('tokensBurnedBadge','Burned: '+(s?.burned||'0')+' GO');
+ const select=$('transferTokenSelect');if(select){const curVal=select.value;select.replaceChildren();
+ if(!state.tokens.length){const opt=el('option',null,'No tokens registered yet');opt.value='';select.append(opt);}
+ else{for(const t of state.tokens){const opt=el('option',null,t.symbol+' ('+t.name+')');opt.value=t.id;if(t.id===curVal)opt.selected=true;select.append(opt);}}}
+ const rows=$('tokenRows');if(rows){rows.replaceChildren();
+ for(const t of state.tokens){
+  const row=el('tr');const idCell=el('td');const idCode=el('code',null,short(t.id,12,6));idCode.title=t.id;idCell.append(idCode);
+  const symCell=el('td',null,t.symbol);const nameCell=el('td',null,t.name);const decCell=el('td',null,String(t.decimals));
+  const supplyCell=el('td',null,amount(t.total_supply));const authCell=el('td');const authCode=el('code',null,t.mint_authority?short(t.mint_authority,8,6):'REVOKED');if(t.mint_authority)authCode.title=t.mint_authority;authCell.append(authCode);
+  const createdCell=el('td',null,'#'+t.created_at);row.append(idCell,symCell,nameCell,decCell,supplyCell,authCell,createdCell);rows.append(row);
+ }
+ if(!state.tokens.length){const row=el('tr');const cell=el('td','empty','No GRC-20 tokens created yet. Use the form above to issue your first asset!');cell.colSpan=7;row.append(cell);rows.append(row);}
+ text('tokenResultCount',state.tokens.length+' tokens registered');}
+}
 function openBlock(index){state.selected=index;renderDialog();if(!$('blockDialog').open)$('blockDialog').showModal();}
 async function refresh(){
  if(state.loading)return;state.loading=true;$('refresh').disabled=true;
  try{
   const [health,stats,peers]=await Promise.all([api('/health'),api('/stats'),api('/peers')]);
+  let tokenListRes={tokens:[]},stateRootRes={state_root:''};
+  try{ [tokenListRes,stateRootRes]=await Promise.all([api('/token/list'),api('/token/state-root')]); }catch(e){}
+  state.tokens=tokenListRes.tokens||[];
+  state.tokenStateRoot=stateRootRes.state_root||'';
   let blocks=state.blocks;
   if(state.tip!==stats.tip_hash){const result=await api('/explorer/blocks');if(result.tip_hash!==stats.tip_hash)return;blocks=result.blocks;}
   const account=await api('/balance/'+encodeURIComponent(health.miner));
   state.clockOffset=Date.parse(health.server_time)-Date.now();state.health=health;state.stats=stats;state.peers=peers;state.blocks=blocks;state.account=account;state.tip=stats.tip_hash;state.online=true;state.lastUpdated=Date.now();
   $('errorBanner').hidden=true;$('connection').className='live-badge online';$('connection').replaceChildren(el('i'),document.createTextNode('Live'));
-  renderOverview();renderTrack();renderTable();renderNetwork();if($('blockDialog').open)renderDialog();text('updated','Updated '+new Date().toLocaleTimeString());
+  renderOverview();renderTrack();renderTable();renderNetwork();renderTokens();if($('blockDialog').open)renderDialog();text('updated','Updated '+new Date().toLocaleTimeString());
  }catch(error){
   state.online=false;$('errorBanner').hidden=false;text('errorBanner',state.lastUpdated?'Connection lost. Showing the last successful snapshot; retrying automatically.':'Cannot reach this node. Start GoChain and this page will reconnect automatically.');
   $('connection').className='live-badge offline';$('connection').replaceChildren(el('i'),document.createTextNode('Offline'));renderCountdown();
@@ -118,4 +140,29 @@ $('loadMore').addEventListener('click',()=>{state.limit+=10;renderTable();});
 $('closeDialog').addEventListener('click',()=>$('blockDialog').close());
 $('blockDialog').addEventListener('click',event=>{if(event.target===$('blockDialog')){const r=$('blockDialog').getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)$('blockDialog').close();}});
 for(const link of document.querySelectorAll('.nav-link'))link.addEventListener('click',()=>{for(const other of document.querySelectorAll('.nav-link'))other.classList.toggle('active',other===link);});
+$('createTokenForm')?.addEventListener('submit',async event=>{
+ event.preventDefault();
+ try{
+  const name=$('tokenName').value.trim();
+  const symbol=$('tokenSymbol').value.trim().toUpperCase();
+  const decimals=Number($('tokenDecimals').value);
+  const initial_supply=Number($('tokenInitial').value);
+  const max_supply=Number($('tokenMax').value);
+  await postApi('/token/create',{wallet:".gochain-wallet.json",name,symbol,decimals,initial_supply,max_supply});
+  toast('Token '+symbol+' creation queued! Mine a block to confirm.');
+  $('tokenName').value='';$('tokenSymbol').value='';refresh();
+ }catch(err){toast('Error: '+err.message);}
+});
+$('transferTokenForm')?.addEventListener('submit',async event=>{
+ event.preventDefault();
+ try{
+  const token_id=$('transferTokenSelect').value;
+  if(!token_id){toast('Please select a token');return;}
+  const recipient=$('transferRecipient').value.trim();
+  const amount=Number($('transferAmount').value);
+  await postApi('/token/transfer',{wallet:".gochain-wallet.json",token_id,recipient,amount});
+  toast('Transfer of '+amount+' tokens queued! Mine a block to confirm.');
+  $('transferAmount').value='';refresh();
+ }catch(err){toast('Error: '+err.message);}
+});
 setInterval(renderCountdown,1000);poll();
